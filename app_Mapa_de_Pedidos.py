@@ -91,9 +91,12 @@ def tela_usuarios(user):
             
             if st.form_submit_button("Salvar"):
                 mods = []
-                if m1: mods.append("Cadastro"); if m2: mods.append("Produtos")
-                if m3: mods.append("Pedidos"); if m4: mods.append("Gestão de Rotas")
-                if m5: mods.append("Gestão de Usuários"); if m6: mods.append("Logs")
+                if m1: mods.append("Cadastro"); 
+                if m2: mods.append("Produtos");
+                if m3: mods.append("Pedidos"); 
+                if m4: mods.append("Gestão de Rotas");
+                if m5: mods.append("Gestão de Usuários"); 
+                if m6: mods.append("Logs");
                 
                 df_u = pd.DataFrame(aba_user.get_all_records())
                 if novo_u in df_u['usuario'].values:
