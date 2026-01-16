@@ -74,7 +74,7 @@ else:
     
     # Controle de Módulos (Separados por vírgula na planilha)
     if user['modulos'] == 'todos':
-    modulos_lista = ["Pedidos", "Dashboard", "Logs"]
+        modulos_lista = ["Pedidos", "Dashboard", "Logs"]
     else:
         modulos_lista = user['modulos'].split(',')
     
