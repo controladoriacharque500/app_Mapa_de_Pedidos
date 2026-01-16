@@ -1,25 +1,28 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from gspread_models.service import service_account_from_dict, service_account
+import gspread
 
 # --- CONFIGURAÇÕES INICIAIS ---
 PLANILHA_NOME = "Mapa_de_Pedidos" # Nome exato da sua planilha
 CREDENTIALS_PATH = "credentials.json"  # Para rodar localmente
 
 def get_gc():
-    """Retorna a conexão com o Google Sheets baseada no seu código de produção."""
+    """Conecta ao Google Sheets usando a lógica de limpeza de chave do projeto anterior."""
     try:
         if "gcp_service_account" in st.secrets:
             secrets_dict = dict(st.secrets["gcp_service_account"])
+            # Limpeza da chave privada (Sua lógica anterior)
             pk = secrets_dict["private_key"].replace('\n', '').replace(' ', '')
             pk = pk.replace('-----BEGINPRIVATEKEY-----', '').replace('-----ENDPRIVATEKEY-----', '')
             padding = len(pk) % 4
             if padding != 0: pk += '=' * (4 - padding)
             secrets_dict["private_key"] = f"-----BEGIN PRIVATE KEY-----\n{pk}\n-----END PRIVATE KEY-----\n"
-            return service_account_from_dict(secrets_dict)
+            
+            # Autenticação usando gspread padrão
+            return gspread.service_account_from_dict(secrets_dict)
         else:
-            return service_account(filename=CREDENTIALS_PATH)
+            return gspread.service_account(filename=CREDENTIALS_PATH)
     except Exception as e:
         st.error(f"Erro na conexão: {e}")
         return None
@@ -27,10 +30,17 @@ def get_gc():
 # --- FUNÇÕES DE DADOS ---
 def login_usuario(usuario, senha):
     gc = get_gc()
-    df_users = pd.DataFrame(gc.open(PLANILHA_NOME).worksheet("usuarios").get_all_records())
-    user_match = df_users[(df_users['usuario'] == usuario) & (df_users['senha'] == str(senha))]
-    if not user_match.empty:
-        return user_match.iloc[0].to_dict()
+    if gc:
+        # Abre a aba 'usuarios'
+        sh = gc.open(PLANILHA_NOME)
+        wks = sh.worksheet("usuarios")
+        df_users = pd.DataFrame(wks.get_all_records())
+        
+        # Filtra usuário e senha (convertendo senha para string para evitar erro de tipo)
+        user_match = df_users[(df_users['usuario'] == usuario) & (df_users['senha'].astype(str) == str(senha))]
+        
+        if not user_match.empty:
+            return user_match.iloc[0].to_dict()
     return None
 
 def registrar_log(usuario, acao, detalhes):
