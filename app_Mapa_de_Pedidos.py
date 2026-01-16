@@ -110,7 +110,7 @@ def tela_cadastro(user):
         prox_id = int(pd.to_numeric(df_ped['id']).max()) + 1 if not df_ped.empty else 1
         with st.form("f_n"):
             cli = st.text_input("Cliente")
-            uf = st.selectbox("UF", ["RJ", "SP", "MG", "ES", "PR", "SC", "RS", "PE", "BA", "CE", "DF", "GO", "MT", "MS", "PA", "PB", "PI", "RN", "RO", "RR", "SE", "TO"])
+            uf = st.selectbox("UF", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
             prod = st.selectbox("Produto", [""] + df_prod['descricao'].tolist())
             if prod:
                 dp = df_prod[df_prod['descricao']==prod].iloc[0]
