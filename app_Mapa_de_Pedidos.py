@@ -50,26 +50,35 @@ def gerar_pdf_rota(df_matriz):
     pdf.cell(0, 10, f"MAPA DE CARREGAMENTO - {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align='C')
     pdf.ln(5)
     pdf.set_font("Arial", "B", 7)
-    cols = df_matriz.columns.tolist()
-    col_width = 240 / (len(cols) + 1)
-    pdf.cell(50, 7, "Cliente", 1, 0, 'C')
+    
+    # Se o dataframe veio com reset_index, precisamos tratar as colunas
+    cols = [c for c in df_matriz.columns if c not in ['id', 'cliente']]
+    col_width = 230 / (len(cols) + 1)
+    
+    pdf.cell(60, 7, "Cliente", 1, 0, 'C')
     for col in cols:
         pdf.cell(col_width, 7, str(col)[:10], 1, 0, 'C')
     pdf.ln()
+    
     pdf.set_font("Arial", "", 7)
     for index, row in df_matriz.iterrows():
-        # Ajuste para lidar com índices simples ou compostos (tuplas)
-        label = str(index[1]) if isinstance(index, tuple) else str(index)
-        fill = "TOTAL" in label.upper()
-        if fill: 
+        label = str(row['cliente'])
+        is_total = "TOTAL" in label.upper()
+        
+        if is_total:
             pdf.set_fill_color(230, 230, 230)
             pdf.set_font("Arial", "B", 7)
-        else: pdf.set_font("Arial", "", 7)
-        pdf.cell(50, 6, label[:30], 1, 0, 'L', fill)
+        else:
+            pdf.set_font("Arial", "", 7)
+            
+        pdf.cell(60, 6, label[:35], 1, 0, 'L', is_total)
         for col in cols:
             val = row[col]
-            txt = f"{val:.2f}" if "PESO" in label.upper() else str(int(val))
-            pdf.cell(col_width, 6, txt, 1, 0, 'C', fill)
+            try:
+                txt = f"{float(val):.2f}" if "PESO" in label.upper() else str(int(float(val)))
+            except:
+                txt = str(val)
+            pdf.cell(col_width, 6, txt, 1, 0, 'C', is_total)
         pdf.ln()
     return bytes(pdf.output())
 
@@ -82,7 +91,7 @@ def tela_usuarios(user):
         with st.form("form_usuario"):
             novo_u = st.text_input("Usuário (Login)")
             nova_s = st.text_input("Senha", type="password")
-            nivel = st.selectbox("Nível (Total libera botões de ação)", ["total", "visualizacao"])
+            nivel = st.selectbox("Nível", ["total", "visualizacao"])
             m1 = st.checkbox("Cadastro", True); m2 = st.checkbox("Produtos", True)
             m3 = st.checkbox("Pedidos", True); m4 = st.checkbox("Gestão de Rotas", True)
             m5 = st.checkbox("Gestão de Usuários", False); m6 = st.checkbox("Logs", True)
@@ -119,7 +128,6 @@ def tela_cadastro(user):
     tab_lançar, tab_editar = st.tabs(["🚀 Novo Lançamento", "✏️ Editar / Excluir Pendentes"])
 
     with tab_lançar:
-        # PROTEÇÃO CONTRA STRING VAZIA NO ID
         df_ped['id'] = pd.to_numeric(df_ped['id'], errors='coerce').fillna(0)
         proximo_id = int(df_ped['id'].max()) + 1 if not df_ped.empty else 1
         with st.container(border=True):
@@ -177,7 +185,6 @@ def tela_pedidos(user):
     gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_pedidos = sh.worksheet("pedidos")
     df_p = pd.DataFrame(aba_pedidos.get_all_records())
     
-    # TRATAMENTO PARA EVITAR ERRO DE CONVERSÃO
     df_p['id'] = pd.to_numeric(df_p['id'], errors='coerce').fillna(0)
     df_p['caixas'] = pd.to_numeric(df_p['caixas'], errors='coerce').fillna(0)
     df_p['peso'] = pd.to_numeric(df_p['peso'], errors='coerce').fillna(0)
@@ -196,39 +203,46 @@ def tela_pedidos(user):
     if selecao.selection.rows:
         df_sel = df_filtrado.iloc[selecao.selection.rows]
         
-        # MUDANÇA CRÍTICA: pivot_table agora usa 'id' e 'cliente' no index para suportar baixas parciais
-        matriz = df_sel.pivot_table(index=['id', 'cliente'], columns='produto', values='caixas', aggfunc='sum', fill_value=0)
-        matriz['TOTAL CX'] = matriz.sum(axis=1)
-        
-        totais_cx = matriz.sum().to_frame().T
-        totais_cx.index = [('TOTAL CAIXAS', 'TOTAL CAIXAS')]
-        
-        peso_resumo = df_sel.groupby('produto')['peso'].sum().to_frame().T
-        peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
-        peso_resumo.index = [('TOTAL PESO (kg)', 'TOTAL PESO (kg)')]
-        peso_resumo['TOTAL CX'] = df_sel['peso'].sum()
-        
-        df_final = pd.concat([matriz, totais_cx, peso_resumo])
-        
-        st.subheader("📊 Matriz de Carregamento")
-        st.dataframe(df_final, use_container_width=True)
-        
-        c_pdf, c_conf = st.columns(2)
         try:
-            pdf_bytes = gerar_pdf_rota(df_final)
+            # Geração da Matriz
+            matriz = df_sel.pivot_table(index=['id', 'cliente'], columns='produto', values='caixas', aggfunc='sum', fill_value=0)
+            matriz['TOTAL CX'] = matriz.sum(axis=1)
+            
+            totais_cx = matriz.sum().to_frame().T
+            totais_cx.index = pd.MultiIndex.from_tuples([(999998, 'TOTAL CAIXAS')])
+            
+            peso_resumo = df_sel.groupby('produto')['peso'].sum().to_frame().T
+            peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
+            peso_resumo.index = pd.MultiIndex.from_tuples([(999999, 'TOTAL PESO (kg)')])
+            peso_resumo['TOTAL CX'] = df_sel['peso'].sum()
+            
+            df_final = pd.concat([matriz, totais_cx, peso_resumo])
+
+            # --- CORREÇÃO PARA O ERRO PYARROW ---
+            # Resetamos o índice e convertemos tudo para string para o Streamlit não falhar
+            df_exibicao = df_final.reset_index()
+            df_exibicao.columns = [str(c) for c in df_exibicao.columns]
+            df_exibicao = df_exibicao.astype(str)
+            
+            st.subheader("📊 Matriz de Carregamento")
+            st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
+            # ------------------------------------
+            
+            c_pdf, c_conf = st.columns(2)
+            
+            pdf_bytes = gerar_pdf_rota(df_exibicao)
             c_pdf.download_button("📄 Baixar PDF do Mapa", data=pdf_bytes, file_name=f"mapa_{datetime.now().strftime('%d%m_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
-        except Exception as e: c_pdf.error(f"Erro PDF: {e}")
-        
-        if (user['nivel'] == 'total' or user['usuario'] == 'admin') and c_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
-            ids = df_sel['id'].astype(str).tolist()
-            data = aba_pedidos.get_all_values()
-            for i, lin in enumerate(data):
-                if str(lin[0]) in ids and lin[5] == 'pendente': 
-                    aba_pedidos.update_cell(i + 1, 6, "em rota")
-            registrar_log(user['usuario'], "ROTA", "Carga confirmada")
-            st.rerun()
-        elif user['nivel'] == 'visualizacao':
-            c_conf.warning("Nível 'visualizacao' não pode confirmar rota.")
+            
+            if (user['nivel'] == 'total' or user['usuario'] == 'admin') and c_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
+                ids = df_sel['id'].astype(str).tolist()
+                data = aba_pedidos.get_all_values()
+                for i, lin in enumerate(data):
+                    if str(lin[0]) in ids and lin[5] == 'pendente': 
+                        aba_pedidos.update_cell(i + 1, 6, "em rota")
+                registrar_log(user['usuario'], "ROTA", "Carga confirmada")
+                st.success("Carga confirmada!"); st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao gerar matriz: {e}")
 
 def tela_gestao_rotas(user):
     st.header("🔄 Gestão de Pedidos em Rota")
@@ -251,7 +265,6 @@ def tela_gestao_rotas(user):
                 st.rerun()
         
         with c2.expander("📉 Saída Parcial"):
-            # FORMULÁRIO COM CHAVE ÚNICA PARA EVITAR ERRO DE BOTÃO
             for _, r in df_sel.iterrows():
                 with st.form(key=f"baixa_{r['id']}_{_}"):
                     st.write(f"ID {r['id']} - {r['cliente']}")
@@ -293,6 +306,8 @@ else:
     elif menu == "Gestão de Rotas": tela_gestao_rotas(user)
     elif menu == "Gestão de Usuários": tela_usuarios(user)
     elif menu == "Logs":
-        df_l = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
-        st.dataframe(df_l.sort_index(ascending=False), use_container_width=True)
+        try:
+            df_l = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
+            st.dataframe(df_l.sort_index(ascending=False), use_container_width=True)
+        except: st.info("Sem logs ainda.")
     if st.sidebar.button("Sair"): st.session_state.usuario_logado = None; st.rerun()
