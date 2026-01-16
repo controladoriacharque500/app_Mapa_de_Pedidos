@@ -120,7 +120,7 @@ def tela_cadastro(user):
         st.subheader(f"Novo Pedido: #{proximo_id}")
         c1, c2 = st.columns(2)
         cliente = c1.text_input("Cliente")
-        uf = c2.selectbox("Estado", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PB", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
+        uf = c2.selectbox("Estado", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
         prod_sel = st.selectbox("Produto", [""] + lista_produtos)
         
         if prod_sel:
