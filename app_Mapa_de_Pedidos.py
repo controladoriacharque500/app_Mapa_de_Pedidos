@@ -72,32 +72,21 @@ def gerar_pdf_rota(df_matriz):
         pdf.ln()
     return bytes(pdf.output())
 
-# --- MÓDULO: GESTÃO DE USUÁRIOS ---
+# --- MÓDULOS DE TELA ---
+
 def tela_usuarios(user):
     st.header("👥 Gestão de Usuários e Permissões")
-    gc = get_gc()
-    sh = gc.open(PLANILHA_NOME)
-    aba_user = sh.worksheet("usuarios")
-    
+    gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_user = sh.worksheet("usuarios")
     with st.expander("➕ Cadastrar / Editar Usuário"):
         with st.form("form_usuario"):
             novo_u = st.text_input("Usuário (Login)")
             nova_s = st.text_input("Senha", type="password")
-            nivel = st.selectbox("Nível", ["total", "visualizacao"])
-            st.write("**Módulos Permitidos:**")
+            nivel = st.selectbox("Nível (Total libera botões de ação)", ["total", "visualizacao"])
             m1 = st.checkbox("Cadastro", True); m2 = st.checkbox("Produtos", True)
             m3 = st.checkbox("Pedidos", True); m4 = st.checkbox("Gestão de Rotas", True)
             m5 = st.checkbox("Gestão de Usuários", False); m6 = st.checkbox("Logs", True)
-            
             if st.form_submit_button("Salvar"):
-                mods = []
-                if m1: mods.append("Cadastro"); 
-                if m2: mods.append("Produtos");
-                if m3: mods.append("Pedidos"); 
-                if m4: mods.append("Gestão de Rotas");
-                if m5: mods.append("Gestão de Usuários"); 
-                if m6: mods.append("Logs");
-                
+                mods = [m for m, val in zip(["Cadastro", "Produtos", "Pedidos", "Gestão de Rotas", "Gestão de Usuários", "Logs"], [m1, m2, m3, m4, m5, m6]) if val]
                 df_u = pd.DataFrame(aba_user.get_all_records())
                 if novo_u in df_u['usuario'].values:
                     idx = df_u[df_u['usuario'] == novo_u].index[0] + 2
@@ -106,7 +95,6 @@ def tela_usuarios(user):
                 st.success("Usuário salvo!"); st.rerun()
     st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
 
-# --- MÓDULO: PRODUTOS ---
 def tela_produtos(user):
     st.header("📦 Cadastro de Produtos")
     gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_prod = sh.worksheet("produtos")
@@ -120,39 +108,67 @@ def tela_produtos(user):
                 st.success("Cadastrado!"); st.rerun()
     st.dataframe(pd.DataFrame(aba_prod.get_all_records()), use_container_width=True)
 
-# --- MÓDULO: CADASTRO (LANÇAMENTO) ---
 def tela_cadastro(user):
-    st.header("📝 Lançamento de Pedidos")
+    st.header("📝 Gestão de Pedidos")
     gc = get_gc(); sh = gc.open(PLANILHA_NOME)
     aba_pedidos = sh.worksheet("pedidos"); aba_produtos = sh.worksheet("produtos")
-    df_atual = pd.DataFrame(aba_pedidos.get_all_records())
-    proximo_id = int(pd.to_numeric(df_atual['id']).max()) + 1 if not df_atual.empty else 1
-    df_p = pd.DataFrame(aba_produtos.get_all_records())
+    df_ped = pd.DataFrame(aba_pedidos.get_all_records())
+    df_prod = pd.DataFrame(aba_produtos.get_all_records())
 
-    with st.container(border=True):
-        st.subheader(f"Novo Pedido: #{proximo_id}")
-        c1, c2 = st.columns(2)
-        cliente = c1.text_input("Cliente")
-        uf = c2.selectbox("Estado", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
-        prod_sel = st.selectbox("Produto", [""] + df_p['descricao'].tolist())
-        
-        if prod_sel:
-            dados_prod = df_p[df_p['descricao'] == prod_sel].iloc[0]
-            col_a, col_b = st.columns(2)
-            qtd = col_a.number_input("Caixas", min_value=1, step=1)
-            # Lógica de Peso Padrão/Variável Recuperada
-            if dados_prod['tipo'] == "padrão":
-                peso_f = col_b.number_input("Peso (Calculado)", value=float(qtd * float(dados_prod['peso_unitario'])), disabled=True)
-            else:
-                peso_f = col_b.number_input("Informe o Peso Real", min_value=0.1)
+    tab_lançar, tab_editar = st.tabs(["🚀 Novo Lançamento", "✏️ Editar / Excluir Pendentes"])
 
-            if st.button("Confirmar Lançamento"):
-                if cliente:
-                    aba_pedidos.append_row([proximo_id, f"{cliente} ({uf})", prod_sel, qtd, peso_f, "pendente"])
-                    registrar_log(user['usuario'], "CADASTRO", f"ID {proximo_id}")
-                    st.success("Lançado!"); st.rerun()
+    with tab_lançar:
+        proximo_id = int(pd.to_numeric(df_ped['id']).max()) + 1 if not df_ped.empty else 1
+        with st.container(border=True):
+            st.subheader(f"Novo Pedido: #{proximo_id}")
+            c1, c2 = st.columns(2)
+            cliente = c1.text_input("Cliente")
+            uf = c2.selectbox("Estado", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
+            prod_sel = st.selectbox("Produto", [""] + df_prod['descricao'].tolist())
+            if prod_sel:
+                dados_p = df_prod[df_prod['descricao'] == prod_sel].iloc[0]
+                col_a, col_b = st.columns(2)
+                qtd = col_a.number_input("Caixas", min_value=1, step=1)
+                if dados_p['tipo'] == "padrão":
+                    peso_f = col_b.number_input("Peso (Calculado)", value=float(qtd * float(dados_p['peso_unitario'])), disabled=True)
+                else:
+                    peso_f = col_b.number_input("Peso Real", min_value=0.1)
+                if st.button("Confirmar Lançamento"):
+                    if cliente:
+                        aba_pedidos.append_row([proximo_id, f"{cliente} ({uf})", prod_sel, qtd, peso_f, "pendente"])
+                        registrar_log(user['usuario'], "CADASTRO", f"ID {proximo_id}")
+                        st.success("Lançado!"); st.rerun()
 
-# --- MÓDULO: PEDIDOS (MONTAGEM DE CARGA) ---
+    with tab_editar:
+        df_pend = df_ped[df_ped['status'] == 'pendente'].copy()
+        if df_pend.empty:
+            st.info("Não há pedidos pendentes para editar.")
+        else:
+            sel_edit = st.selectbox("Selecione o pedido", df_pend.index, format_func=lambda x: f"ID {df_pend.loc[x,'id']} - {df_pend.loc[x,'cliente']} - {df_pend.loc[x,'produto']}")
+            ped_sel = df_pend.loc[sel_edit]
+            with st.form("form_edit"):
+                ed_cli = st.text_input("Nome Cliente/UF", ped_sel['cliente'])
+                ed_qtd = st.number_input("Quantidade Caixas", value=int(ped_sel['caixas']), min_value=1)
+                
+                c_edit, c_del = st.columns(2)
+                if c_edit.form_submit_button("✅ Salvar Alterações", use_container_width=True):
+                    data = aba_pedidos.get_all_values()
+                    for i, r in enumerate(data):
+                        if str(r[0]) == str(ped_sel['id']):
+                            aba_pedidos.update_cell(i+1, 2, ed_cli)
+                            aba_pedidos.update_cell(i+1, 4, ed_qtd)
+                            p_u = float(ped_sel['peso']) / int(ped_sel['caixas'])
+                            aba_pedidos.update_cell(i+1, 5, ed_qtd * p_u)
+                    st.success("Editado com sucesso!"); st.rerun()
+                
+                if c_del.form_submit_button("🗑️ EXCLUIR PEDIDO", use_container_width=True):
+                    data = aba_pedidos.get_all_values()
+                    for i, r in enumerate(data):
+                        if str(r[0]) == str(ped_sel['id']):
+                            aba_pedidos.delete_rows(i+1)
+                            st.warning("Pedido excluído!"); break
+                    st.rerun()
+
 def tela_pedidos(user):
     st.header("🚚 Montagem de Carga")
     gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_pedidos = sh.worksheet("pedidos")
@@ -164,7 +180,6 @@ def tela_pedidos(user):
     if df_pendentes.empty:
         st.info("Sem pedidos pendentes."); return
 
-    # Filtro por UF
     df_pendentes['uf_extraida'] = df_pendentes['cliente'].str.extract(r'\((.*?)\)')
     ufs = sorted(df_pendentes['uf_extraida'].dropna().unique().tolist())
     f_uf = st.sidebar.multiselect("Filtrar por UF", options=ufs, default=ufs)
@@ -174,7 +189,6 @@ def tela_pedidos(user):
     
     if selecao.selection.rows:
         df_sel = df_filtrado.iloc[selecao.selection.rows]
-        # Matriz de Carregamento detalhada Recuperada
         matriz = df_sel.pivot_table(index=['id', 'cliente'], columns='produto', values='caixas', aggfunc='sum', fill_value=0)
         matriz['TOTAL CX'] = matriz.sum(axis=1)
         totais_cx = matriz.sum().to_frame().T
@@ -189,51 +203,50 @@ def tela_pedidos(user):
         st.dataframe(df_final, use_container_width=True)
         
         c_pdf, c_conf = st.columns(2)
-        # Geração de PDF Recuperada
         try:
             pdf_bytes = gerar_pdf_rota(df_final)
             c_pdf.download_button("📄 Baixar PDF do Mapa", data=pdf_bytes, file_name=f"mapa_{datetime.now().strftime('%d%m_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
         except Exception as e: c_pdf.error(f"Erro PDF: {e}")
         
-        if user['nivel'] != 'visualizacao' and c_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
+        if (user['nivel'] == 'total' or user['usuario'] == 'admin') and c_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
             ids = df_sel['id'].astype(str).tolist()
             data = aba_pedidos.get_all_values()
             for i, lin in enumerate(data):
                 if str(lin[0]) in ids: aba_pedidos.update_cell(i + 1, 6, "em rota")
-            registrar_log(user['usuario'], "ROTA", f"Carga confirmada")
+            registrar_log(user['usuario'], "ROTA", "Carga confirmada")
             st.rerun()
+        elif user['nivel'] == 'visualizacao':
+            c_conf.warning("Nível 'visualizacao' não pode confirmar rota.")
 
-# --- MÓDULO: GESTÃO DE ROTAS ---
 def tela_gestao_rotas(user):
     st.header("🔄 Gestão de Pedidos em Rota")
-    sh = get_gc().open(PLANILHA_NOME); aba = sh.worksheet("pedidos")
-    df = pd.DataFrame(aba.get_all_records())
+    sh = get_gc().open(PLANILHA_NOME).worksheet("pedidos")
+    df = pd.DataFrame(sh.get_all_records())
     df_rota = df[df['status'] == 'em rota'].copy()
     if df_rota.empty: st.info("Nada em rota."); return
-
     selecao = st.dataframe(df_rota, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row")
     if selecao.selection.rows:
         df_sel = df_rota.iloc[selecao.selection.rows]
         c1, c2 = st.columns(2)
         with c1.expander("❌ Cancelar Total"):
-            if st.button("Confirmar Retorno"):
+            if st.button("Confirmar Retorno ao Pendente"):
                 ids = df_sel['id'].astype(str).tolist()
-                for i, row in enumerate(aba.get_all_values()):
-                    if str(row[0]) in ids: aba.update_cell(i + 1, 6, "pendente")
+                for i, row in enumerate(sh.get_all_values()):
+                    if str(row[0]) in ids: sh.update_cell(i + 1, 6, "pendente")
                 st.rerun()
         with c2.expander("📉 Saída Parcial"):
             for _, r in df_sel.iterrows():
-                qtd_s = st.number_input(f"Qtd saiu #{r['id']}", 0, int(r['caixas']), int(r['caixas']), key=f"s_{r['id']}")
+                qtd_s = st.number_input(f"Qtd saiu #{r['id']}", 0, int(r['caixas']), int(r['caixas']), key=f"rot_{r['id']}")
                 if st.button(f"Salvar Parcial {r['id']}"):
                     peso_u = float(r['peso']) / int(r['caixas'])
-                    for i, lin in enumerate(aba.get_all_values()):
+                    for i, lin in enumerate(sh.get_all_values()):
                         if str(lin[0]) == str(r['id']):
-                            aba.update_cell(i + 1, 6, "entregue")
-                            aba.update_cell(i + 1, 4, qtd_s)
-                            aba.update_cell(i + 1, 5, qtd_s * peso_u)
+                            sh.update_cell(i + 1, 6, "entregue")
+                            sh.update_cell(i + 1, 4, qtd_s)
+                            sh.update_cell(i + 1, 5, qtd_s * peso_u)
                             sobra = int(r['caixas']) - qtd_s
                             if sobra > 0:
-                                aba.append_row([r['id'], r['cliente'], r['produto'], sobra, sobra * peso_u, "pendente"])
+                                sh.append_row([r['id'], r['cliente'], r['produto'], sobra, sobra * peso_u, "pendente"])
                     st.rerun()
 
 # --- MAIN ---
@@ -251,10 +264,9 @@ if st.session_state.usuario_logado is None:
 else:
     user = st.session_state.usuario_logado
     st.sidebar.title(f"👤 {user['usuario']}")
-    opcoes_full = ["Cadastro", "Produtos", "Pedidos", "Gestão de Rotas", "Gestão de Usuários", "Logs"]
-    opcoes = opcoes_full if user['modulos'] == 'todos' else user['modulos'].split(',')
+    op_full = ["Cadastro", "Produtos", "Pedidos", "Gestão de Rotas", "Gestão de Usuários", "Logs"]
+    opcoes = op_full if user['modulos'] == 'todos' else user['modulos'].split(',')
     menu = st.sidebar.radio("Menu:", opcoes)
-
     if menu == "Cadastro": tela_cadastro(user)
     elif menu == "Produtos": tela_produtos(user)
     elif menu == "Pedidos": tela_pedidos(user)
@@ -263,5 +275,4 @@ else:
     elif menu == "Logs":
         df_l = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
         st.dataframe(df_l.sort_index(ascending=False), use_container_width=True)
-    
     if st.sidebar.button("Sair"): st.session_state.usuario_logado = None; st.rerun()
