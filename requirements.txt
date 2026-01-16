@@ -4,3 +4,4 @@ gspread
 streamlit_authenticator
 google-auth
 pyyaml
+fpdf2
