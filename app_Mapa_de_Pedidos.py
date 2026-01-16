@@ -43,7 +43,7 @@ def login_usuario(usuario, senha):
         return user_match.iloc[0].to_dict() if not user_match.empty else None
     return None
 
-# --- GERAÇÃO DE PDF ---
+# --- GERAÇÃO DE PDF (CORRIGIDA PARA BYTES) ---
 def gerar_pdf_rota(df_matriz):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
@@ -62,17 +62,25 @@ def gerar_pdf_rota(df_matriz):
     
     pdf.set_font("Arial", "", 7)
     for index, row in df_matriz.iterrows():
+        # Lógica para tratar o MultiIndex da pivot table
         label = str(index[1]) if isinstance(index, tuple) else str(index)
-        fill = index in ['TOTAL CAIXAS', 'TOTAL PESO (kg)']
-        if fill: pdf.set_fill_color(230, 230, 230)
         
+        fill = index in ['TOTAL CAIXAS', 'TOTAL PESO (kg)']
+        if fill: 
+            pdf.set_fill_color(230, 230, 230)
+            pdf.set_font("Arial", "B", 7)
+        else:
+            pdf.set_font("Arial", "", 7)
+            
         pdf.cell(50, 6, label[:30], 1, 0, 'L', fill)
         for col in cols:
             val = row[col]
             txt = f"{val:.2f}" if "PESO" in str(index) else str(int(val))
             pdf.cell(col_width, 6, txt, 1, 0, 'C', fill)
         pdf.ln()
-    return pdf.output()
+    
+    # Retorna o PDF como bytes compatíveis com o Streamlit
+    return bytes(pdf.output())
 
 # --- MÓDULOS DE TELA ---
 def tela_produtos(user):
@@ -83,7 +91,7 @@ def tela_produtos(user):
     with st.expander("➕ Adicionar Novo Produto"):
         with st.form("form_prod"):
             desc = st.text_input("Descrição do Produto")
-            p_unit = st.number_input("Peso Unitário (se for padrão)", min_value=0.0, step=0.01)
+            p_unit = st.number_input("Peso Unitário", min_value=0.0, step=0.01)
             tipo = st.selectbox("Tipo de Peso", ["padrão", "variável"])
             if st.form_submit_button("Cadastrar Produto"):
                 aba_prod.append_row([desc, p_unit, tipo])
@@ -160,14 +168,13 @@ def tela_pedidos(user):
     if rows:
         df_sel = df_filtrado.iloc[rows]
         
-        # MATRIZ DINÂMICA (Resolução do ValueError de alinhamento)
+        # Matriz dinâmica (clientes nas linhas, produtos nas colunas)
         matriz = df_sel.pivot_table(index=['id', 'cliente'], columns='produto', values='caixas', aggfunc='sum', fill_value=0)
         matriz['TOTAL CX'] = matriz.sum(axis=1)
         
         totais_cx = matriz.sum().to_frame().T
         totais_cx.index = ['TOTAL CAIXAS']
         
-        # Cálculo de Peso por Produto alinhado às colunas da matriz
         peso_resumo = df_sel.groupby('produto')['peso'].sum().to_frame().T
         peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
         peso_resumo.index = ['TOTAL PESO (kg)']
@@ -180,11 +187,19 @@ def tela_pedidos(user):
         
         col_pdf, col_conf = st.columns(2)
         
-        # Botão PDF
-        pdf_bytes = gerar_pdf_rota(df_final)
-        col_pdf.download_button("📄 Baixar PDF para Impressão", data=pdf_bytes, file_name="mapa_carga.pdf", mime="application/pdf", use_container_width=True)
+        # Botão PDF com conversão segura para bytes
+        try:
+            pdf_bytes = gerar_pdf_rota(df_final)
+            col_pdf.download_button(
+                label="📄 Baixar PDF para Impressão",
+                data=pdf_bytes,
+                file_name=f"mapa_carga_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        except Exception as e:
+            col_pdf.error(f"Erro ao gerar PDF: {e}")
         
-        # Botão Confirmar
         if user['nivel'] != 'visualizacao' and col_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
             ids_sel = df_sel['id'].astype(str).tolist()
             dados_planilha = aba_pedidos.get_all_values()
@@ -195,7 +210,7 @@ def tela_pedidos(user):
             st.rerun()
 
 # --- MAIN ---
-st.set_page_config(page_title="Logística Dinâmica", layout="wide")
+st.set_page_config(page_title="Sistema de Carga", layout="wide")
 
 if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
@@ -221,8 +236,7 @@ else:
     elif menu == "Produtos": tela_produtos(user)
     elif menu == "Pedidos": tela_pedidos(user)
     elif menu == "Logs":
-        gc = get_gc()
-        df_logs = pd.DataFrame(gc.open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
+        df_logs = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
         st.dataframe(df_logs.sort_index(ascending=False), use_container_width=True)
 
     if st.sidebar.button("Sair"):
