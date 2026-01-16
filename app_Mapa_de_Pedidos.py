@@ -73,8 +73,12 @@ else:
     st.sidebar.info(f"Nível: {user['nivel']}")
     
     # Controle de Módulos (Separados por vírgula na planilha)
-    modulos = user['modulos'].split(',')
-    menu = st.sidebar.radio("Navegar para:", modulos)
+    if user['modulos'] == 'todos':
+    modulos_lista = ["Pedidos", "Dashboard", "Logs"]
+    else:
+        modulos_lista = user['modulos'].split(',')
+    
+    menu = st.sidebar.radio("Navegar para:", modulos_lista)
 
     if menu == "Pedidos":
         st.header("🚚 Controle de Pedidos e Carga")
