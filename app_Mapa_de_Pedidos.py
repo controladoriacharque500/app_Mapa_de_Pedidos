@@ -8,7 +8,6 @@ PLANILHA_NOME = "Mapa_de_Pedidos"
 CREDENTIALS_PATH = "credentials.json"
 
 def get_gc():
-    """Conecta ao Google Sheets usando a lógica de limpeza de chave."""
     try:
         if "gcp_service_account" in st.secrets:
             secrets_dict = dict(st.secrets["gcp_service_account"])
@@ -30,8 +29,7 @@ def registrar_log(usuario, acao, detalhes):
         gc = get_gc()
         aba_log = gc.open(PLANILHA_NOME).worksheet("log_operacoes")
         aba_log.append_row([datetime.now().strftime("%d/%m/%Y %H:%M:%S"), usuario, acao, detalhes])
-    except:
-        pass
+    except: pass
 
 def login_usuario(usuario, senha):
     gc = get_gc()
@@ -40,121 +38,129 @@ def login_usuario(usuario, senha):
         wks = sh.worksheet("usuarios")
         df_users = pd.DataFrame(wks.get_all_records())
         user_match = df_users[(df_users['usuario'] == usuario) & (df_users['senha'].astype(str) == str(senha))]
-        if not user_match.empty:
-            return user_match.iloc[0].to_dict()
+        return user_match.iloc[0].to_dict() if not user_match.empty else None
     return None
 
-# --- MÓDULO 1: CADASTRO E EDIÇÃO ---
+# --- NOVO MÓDULO: GESTÃO DE PRODUTOS ---
+def tela_produtos(user):
+    st.header("📦 Cadastro de Produtos")
+    gc = get_gc()
+    sh = gc.open(PLANILHA_NOME)
+    aba_prod = sh.worksheet("produtos")
+
+    with st.expander("➕ Adicionar Novo Produto"):
+        with st.form("form_prod"):
+            desc = st.text_input("Descrição do Produto")
+            p_unit = st.number_input("Peso Unitário (se for padrão)", min_value=0.0, step=0.01)
+            tipo = st.selectbox("Tipo de Peso", ["padrão", "variável"])
+            if st.form_submit_button("Cadastrar Produto"):
+                aba_prod.append_row([desc, p_unit, tipo])
+                st.success("Produto cadastrado!")
+                st.rerun()
+
+    df_prod = pd.DataFrame(aba_prod.get_all_records())
+    st.dataframe(df_prod, use_container_width=True)
+
+# --- MÓDULO CADASTRO (ATUALIZADO) ---
 def tela_cadastro(user):
-    st.header("📝 Gestão de Pedidos")
+    st.header("📝 Lançamento de Pedidos")
     gc = get_gc()
     sh = gc.open(PLANILHA_NOME)
     aba_pedidos = sh.worksheet("pedidos")
+    aba_produtos = sh.worksheet("produtos")
+    
+    # 1. Gerar ID Automático
+    df_atual = pd.DataFrame(aba_pedidos.get_all_records())
+    if not df_atual.empty:
+        proximo_id = int(pd.to_numeric(df_atual['id']).max()) + 1
+    else:
+        proximo_id = 1
 
-    # Inserção de Novo Pedido
-    with st.expander("➕ Cadastrar Novo Pedido", expanded=False):
-        if user['nivel'] == 'visualizacao':
-            st.warning("Seu nível de acesso não permite cadastrar.")
-        else:
-            with st.form("novo_pedido", clear_on_submit=True):
-                c1, c2 = st.columns(2)
-                id_p = c1.text_input("ID Pedido")
-                cli = c1.text_input("Cliente")
-                prod = c2.text_input("Produto")
-                cx = c2.number_input("Caixas", min_value=1)
-                peso = st.number_input("Peso Total (kg)", min_value=0.0)
-                if st.form_submit_button("Salvar Pedido"):
-                    aba_pedidos.append_row([id_p, cli, prod, cx, peso, "pendente"])
-                    registrar_log(user['usuario'], "CADASTRO", f"Inseriu ID {id_p}")
-                    st.success("Pedido salvo!")
+    # 2. Carregar Lista de Produtos
+    df_p = pd.DataFrame(aba_produtos.get_all_records())
+    lista_produtos = df_p['descricao'].tolist()
+
+    with st.container(border=True):
+        st.subheader(f"Novo Pedido: #{proximo_id}")
+        
+        col1, col2 = st.columns(2)
+        cliente = col1.text_input("Cliente")
+        uf = col2.selectbox("Estado", ["SP", "RJ", "MG", "ES", "PR", "SC", "RS", "GO", "MT", "MS", "BA"])
+        
+        prod_selecionado = st.selectbox("Selecione o Produto", [""] + lista_produtos)
+        
+        if prod_selecionado:
+            dados_prod = df_p[df_p['descricao'] == prod_selecionado].iloc[0]
+            tipo_peso = dados_prod['tipo']
+            
+            c1, c2 = st.columns(2)
+            qtd = c1.number_input("Quantidade de Caixas", min_value=1, step=1)
+            
+            if tipo_peso == "padrão":
+                peso_calc = qtd * float(dados_prod['peso_unitario'])
+                peso_final = c2.number_input("Peso Total (Calculado)", value=peso_calc, disabled=True)
+                st.caption(f"ℹ️ Produto de peso padrão ({dados_prod['peso_unitario']}kg/un)")
+            else:
+                peso_final = c2.number_input("Informe o Peso Real (Variável)", min_value=0.1)
+
+            if st.button("Confirmar Lançamento"):
+                if cliente:
+                    aba_pedidos.append_row([proximo_id, f"{cliente} ({uf})", prod_selecionado, qtd, peso_final, "pendente"])
+                    registrar_log(user['usuario'], "CADASTRO", f"ID {proximo_id} - {cliente}")
+                    st.success("Pedido lançado!")
                     st.rerun()
+                else:
+                    st.error("Informe o nome do cliente.")
 
     st.divider()
-    st.subheader("✏️ Editar Pedidos Existentes")
-    df_todos = pd.DataFrame(aba_pedidos.get_all_records())
-    
-    # O data_editor permite editar células diretamente
-    df_edit = st.data_editor(df_todos, use_container_width=True, num_rows="dynamic", key="editor")
+    st.subheader("Pedidos Pendentes")
+    st.dataframe(df_atual[df_atual['status'] == 'pendente'], use_container_width=True)
 
-    if st.button("💾 Salvar Alterações na Planilha"):
-        if user['nivel'] == 'visualizacao':
-            st.error("Acesso negado.")
-        else:
-            aba_pedidos.clear()
-            aba_pedidos.update([df_edit.columns.values.tolist()] + df_edit.values.tolist())
-            registrar_log(user['usuario'], "EDIÇÃO", "Editou lista de pedidos")
-            st.success("Planilha atualizada!")
-            st.rerun()
-
-# --- MÓDULO 2: CONTROLE DE CARGA ---
+# --- TELA DE PEDIDOS (MAPA DE CARGA) ---
 def tela_pedidos(user):
-    st.header("🚚 Controle de Pedidos e Carga")
+    st.header("🚚 Montagem de Carga")
     gc = get_gc()
-    planilha = gc.open(PLANILHA_NOME)
-    aba_pedidos = planilha.worksheet("pedidos")
+    sh = gc.open(PLANILHA_NOME)
+    aba_pedidos = sh.worksheet("pedidos")
     df_p = pd.DataFrame(aba_pedidos.get_all_records())
-    
     df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
 
     if df_pendentes.empty:
-        st.info("Nenhum pedido pendente para carregar.")
+        st.info("Nenhum pedido pendente.")
         return
 
-    st.subheader("1. Selecione os itens para a Rota")
-    selecao = st.dataframe(
-        df_pendentes,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="multi-row"
-    )
-
+    selecao = st.dataframe(df_pendentes, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row")
+    
     rows = selecao.selection.rows
     if rows:
         df_rota = df_pendentes.iloc[rows]
-        st.divider()
-        st.subheader("2. Resumo do Mapa de Carregamento")
         st.table(df_rota[['cliente', 'produto', 'caixas', 'peso']])
-        
-        t_caixas = df_rota['caixas'].sum()
         t_peso = df_rota['peso'].sum()
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Qtd de Caixas", f"{t_caixas} un")
-        c2.metric("Peso Total", f"{t_peso:.2f} kg")
-        
-        cap_max = st.number_input("Capacidade do Caminhão (kg)", value=1500.0)
+        st.metric("Peso Total Selecionado", f"{t_peso:.2f} kg")
+        cap_max = st.number_input("Limite do Caminhão", value=1500.0)
         
         if t_peso > cap_max:
-            st.error(f"🚨 CARGA EXCEDIDA! Reduza {t_peso - cap_max:.2f} kg")
-        else:
-            st.success("✅ Peso dentro do limite.")
-            if user['nivel'] == 'visualizacao':
-                st.warning("Apenas visualização.")
-            else:
-                if st.button("Confirmar Carregamento"):
-                    # ATUALIZAÇÃO REAL NA PLANILHA
-                    dados_completos = aba_pedidos.get_all_values()
-                    ids_selecionados = df_rota['id'].astype(str).tolist()
-                    
-                    for i, linha in enumerate(dados_completos):
-                        if str(linha[0]) in ids_selecionados:
-                            aba_pedidos.update_cell(i + 1, 6, "em rota") # Coluna 6 = Status
-                    
-                    registrar_log(user['usuario'], "CARGA", f"Fechou carga de {t_peso}kg")
-                    st.balloons()
-                    st.success("Status atualizado para 'em rota'!")
-                    st.rerun()
+            st.error("EXCESSO DE CARGA!")
+        elif user['nivel'] != 'visualizacao':
+            if st.button("Confirmar Saída para Rota"):
+                ids_sel = df_rota['id'].astype(str).tolist()
+                dados_brutos = aba_pedidos.get_all_values()
+                for i, linha in enumerate(dados_brutos):
+                    if str(linha[0]) in ids_sel:
+                        aba_pedidos.update_cell(i + 1, 6, "em rota")
+                registrar_log(user['usuario'], "SAIDA", f"Carga {t_peso}kg")
+                st.rerun()
 
-# --- INTERFACE PRINCIPAL ---
-st.set_page_config(page_title="Sistema de Carga", layout="wide")
+# --- LOGIN E NAVEGAÇÃO ---
+st.set_page_config(page_title="Logística Dinâmica", layout="wide")
 
 if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
 
 if st.session_state.usuario_logado is None:
-    st.title("Login do Sistema")
-    with st.form("form_login"):
+    st.title("Login")
+    with st.form("login"):
         u = st.text_input("Usuário")
         s = st.text_input("Senha", type="password")
         if st.form_submit_button("Entrar"):
@@ -162,29 +168,24 @@ if st.session_state.usuario_logado is None:
             if dados:
                 st.session_state.usuario_logado = dados
                 st.rerun()
-            else:
-                st.error("Credenciais inválidas")
+            else: st.error("Erro!")
 else:
     user = st.session_state.usuario_logado
     st.sidebar.title(f"👤 {user['usuario']}")
-    st.sidebar.write(f"Nível: **{user['nivel']}**")
     
     if user['modulos'] == 'todos':
-        modulos_lista = ["Cadastro", "Pedidos", "Logs"]
+        opcoes = ["Cadastro", "Produtos", "Pedidos", "Logs"]
     else:
-        modulos_lista = user['modulos'].split(',')
+        opcoes = user['modulos'].split(',')
     
-    menu = st.sidebar.radio("Navegar para:", modulos_lista)
+    menu = st.sidebar.radio("Ir para:", opcoes)
 
-    if menu == "Cadastro":
-        tela_cadastro(user)
-    elif menu == "Pedidos":
-        tela_pedidos(user)
+    if menu == "Cadastro": tela_cadastro(user)
+    elif menu == "Produtos": tela_produtos(user)
+    elif menu == "Pedidos": tela_pedidos(user)
     elif menu == "Logs":
-        st.header("📜 Histórico de Operações")
-        gc = get_gc()
-        df_logs = pd.DataFrame(gc.open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
-        st.dataframe(df_logs.sort_index(ascending=False), use_container_width=True)
+        df_logs = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
+        st.dataframe(df_logs.sort_index(ascending=False))
 
     if st.sidebar.button("Sair"):
         st.session_state.usuario_logado = None
