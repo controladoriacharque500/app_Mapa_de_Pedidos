@@ -39,8 +39,7 @@ def login_usuario(usuario, senha):
         sh = gc.open(PLANILHA_NOME)
         wks = sh.worksheet("usuarios")
         df_users = pd.DataFrame(wks.get_all_records())
-        # Proteção: garante que a comparação seja feita com strings
-        user_match = df_users[(df_users['usuario'].astype(str) == str(usuario)) & (df_users['senha'].astype(str) == str(senha))]
+        user_match = df_users[(df_users['usuario'] == usuario) & (df_users['senha'].astype(str) == str(senha))]
         return user_match.iloc[0].to_dict() if not user_match.empty else None
     return None
 
@@ -59,18 +58,16 @@ def gerar_pdf_rota(df_matriz):
     pdf.ln()
     pdf.set_font("Arial", "", 7)
     for index, row in df_matriz.iterrows():
-        # Trata o rótulo do índice (ID + Cliente)
+        # Ajuste para lidar com índices simples ou compostos (tuplas)
         label = str(index[1]) if isinstance(index, tuple) else str(index)
         fill = "TOTAL" in label.upper()
         if fill: 
             pdf.set_fill_color(230, 230, 230)
             pdf.set_font("Arial", "B", 7)
         else: pdf.set_font("Arial", "", 7)
-        
         pdf.cell(50, 6, label[:30], 1, 0, 'L', fill)
         for col in cols:
             val = row[col]
-            # Formatação baseada no tipo de dado
             txt = f"{val:.2f}" if "PESO" in label.upper() else str(int(val))
             pdf.cell(col_width, 6, txt, 1, 0, 'C', fill)
         pdf.ln()
@@ -122,7 +119,9 @@ def tela_cadastro(user):
     tab_lançar, tab_editar = st.tabs(["🚀 Novo Lançamento", "✏️ Editar / Excluir Pendentes"])
 
     with tab_lançar:
-        proximo_id = int(pd.to_numeric(df_ped['id'], errors='coerce').max()) + 1 if not df_ped.empty else 1
+        # PROTEÇÃO CONTRA STRING VAZIA NO ID
+        df_ped['id'] = pd.to_numeric(df_ped['id'], errors='coerce').fillna(0)
+        proximo_id = int(df_ped['id'].max()) + 1 if not df_ped.empty else 1
         with st.container(border=True):
             st.subheader(f"Novo Pedido: #{proximo_id}")
             c1, c2 = st.columns(2)
@@ -178,11 +177,10 @@ def tela_pedidos(user):
     gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_pedidos = sh.worksheet("pedidos")
     df_p = pd.DataFrame(aba_pedidos.get_all_records())
     
-    # Tratamento de dados para evitar erro int64 com campos vazios
+    # TRATAMENTO PARA EVITAR ERRO DE CONVERSÃO
     df_p['id'] = pd.to_numeric(df_p['id'], errors='coerce').fillna(0)
     df_p['caixas'] = pd.to_numeric(df_p['caixas'], errors='coerce').fillna(0)
     df_p['peso'] = pd.to_numeric(df_p['peso'], errors='coerce').fillna(0)
-    
     df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
 
     if df_pendentes.empty:
@@ -197,49 +195,46 @@ def tela_pedidos(user):
     
     if selecao.selection.rows:
         df_sel = df_filtrado.iloc[selecao.selection.rows]
+        
+        # MUDANÇA CRÍTICA: pivot_table agora usa 'id' e 'cliente' no index para suportar baixas parciais
+        matriz = df_sel.pivot_table(index=['id', 'cliente'], columns='produto', values='caixas', aggfunc='sum', fill_value=0)
+        matriz['TOTAL CX'] = matriz.sum(axis=1)
+        
+        totais_cx = matriz.sum().to_frame().T
+        totais_cx.index = [('TOTAL CAIXAS', 'TOTAL CAIXAS')]
+        
+        peso_resumo = df_sel.groupby('produto')['peso'].sum().to_frame().T
+        peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
+        peso_resumo.index = [('TOTAL PESO (kg)', 'TOTAL PESO (kg)')]
+        peso_resumo['TOTAL CX'] = df_sel['peso'].sum()
+        
+        df_final = pd.concat([matriz, totais_cx, peso_resumo])
+        
+        st.subheader("📊 Matriz de Carregamento")
+        st.dataframe(df_final, use_container_width=True)
+        
+        c_pdf, c_conf = st.columns(2)
         try:
-            # Correção Matriz: Usa ID + Cliente para permitir IDs duplicados da baixa parcial
-            matriz = df_sel.pivot_table(index=['id', 'cliente'], columns='produto', values='caixas', aggfunc='sum', fill_value=0)
-            matriz['TOTAL CX'] = matriz.sum(axis=1)
-            
-            totais_cx = matriz.sum().to_frame().T
-            totais_cx.index = [('', 'TOTAL CAIXAS')]
-            
-            peso_resumo = df_sel.groupby('produto')['peso'].sum().to_frame().T
-            peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
-            peso_resumo.index = [('', 'TOTAL PESO (kg)')]
-            peso_resumo['TOTAL CX'] = df_sel['peso'].sum()
-            
-            df_final = pd.concat([matriz, totais_cx, peso_resumo])
-            
-            st.subheader("📊 Matriz de Carregamento")
-            st.dataframe(df_final, use_container_width=True)
-            
-            c_pdf, c_conf = st.columns(2)
             pdf_bytes = gerar_pdf_rota(df_final)
             c_pdf.download_button("📄 Baixar PDF do Mapa", data=pdf_bytes, file_name=f"mapa_{datetime.now().strftime('%d%m_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
-            
-            if (user['nivel'] == 'total' or user['usuario'] == 'admin') and c_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
-                # Converter IDs para string para comparação segura
-                ids = df_sel['id'].astype(float).astype(int).astype(str).tolist()
-                data = aba_pedidos.get_all_values()
-                for i, lin in enumerate(data):
-                    # Confere ID e também se o produto bate, para evitar baixar o ID errado se houver duplicata
-                    if str(lin[0]) in ids and lin[5] == 'pendente': 
-                        aba_pedidos.update_cell(i + 1, 6, "em rota")
-                registrar_log(user['usuario'], "ROTA", "Carga confirmada")
-                st.success("Carga em rota!"); st.rerun()
-            elif user['nivel'] == 'visualizacao':
-                c_conf.warning("Nível 'visualizacao' não pode confirmar rota.")
-        except Exception as e:
-            st.error(f"Erro ao gerar matriz: {e}")
+        except Exception as e: c_pdf.error(f"Erro PDF: {e}")
+        
+        if (user['nivel'] == 'total' or user['usuario'] == 'admin') and c_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
+            ids = df_sel['id'].astype(str).tolist()
+            data = aba_pedidos.get_all_values()
+            for i, lin in enumerate(data):
+                if str(lin[0]) in ids and lin[5] == 'pendente': 
+                    aba_pedidos.update_cell(i + 1, 6, "em rota")
+            registrar_log(user['usuario'], "ROTA", "Carga confirmada")
+            st.rerun()
+        elif user['nivel'] == 'visualizacao':
+            c_conf.warning("Nível 'visualizacao' não pode confirmar rota.")
 
 def tela_gestao_rotas(user):
     st.header("🔄 Gestão de Pedidos em Rota")
     sh = get_gc().open(PLANILHA_NOME).worksheet("pedidos")
     df = pd.DataFrame(sh.get_all_records())
     df_rota = df[df['status'] == 'em rota'].copy()
-    
     if df_rota.empty: st.info("Nada em rota."); return
     
     selecao = st.dataframe(df_rota, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row")
@@ -247,7 +242,6 @@ def tela_gestao_rotas(user):
     if selecao.selection.rows:
         df_sel = df_rota.iloc[selecao.selection.rows]
         c1, c2 = st.columns(2)
-        
         with c1.expander("❌ Cancelar Total"):
             if st.button("Confirmar Retorno ao Pendente"):
                 ids = df_sel['id'].astype(str).tolist()
@@ -255,25 +249,23 @@ def tela_gestao_rotas(user):
                     if str(row[0]) in ids and row[5] == 'em rota':
                         sh.update_cell(i + 1, 6, "pendente")
                 st.rerun()
-                
+        
         with c2.expander("📉 Saída Parcial"):
+            # FORMULÁRIO COM CHAVE ÚNICA PARA EVITAR ERRO DE BOTÃO
             for _, r in df_sel.iterrows():
-                # Formulário único por ID para não confundir os campos
-                with st.form(key=f"parcial_{r['id']}_{_}"):
+                with st.form(key=f"baixa_{r['id']}_{_}"):
                     st.write(f"ID {r['id']} - {r['cliente']}")
-                    qtd_s = st.number_input(f"Qtd que saiu", 0, int(r['caixas']), int(r['caixas']))
-                    if st.form_submit_button(f"Salvar Parcial"):
-                        peso_u = float(r['peso']) / int(r['caixas'])
-                        all_data = sh.get_all_values()
-                        for i, lin in enumerate(all_data):
-                            # Busca o ID e o Produto para garantir a linha exata
+                    qtd_entregue = st.number_input("Qtd Entregue", 0, int(r['caixas']), int(r['caixas']))
+                    if st.form_submit_button("Confirmar Entrega Parcial"):
+                        p_u = float(r['peso']) / int(r['caixas'])
+                        for i, lin in enumerate(sh.get_all_values()):
                             if str(lin[0]) == str(r['id']) and lin[2] == r['produto'] and lin[5] == 'em rota':
                                 sh.update_cell(i + 1, 6, "entregue")
-                                sh.update_cell(i + 1, 4, qtd_s)
-                                sh.update_cell(i + 1, 5, qtd_s * peso_u)
-                                sobra = int(r['caixas']) - qtd_s
+                                sh.update_cell(i + 1, 4, qtd_entregue)
+                                sh.update_cell(i + 1, 5, qtd_entregue * p_u)
+                                sobra = int(r['caixas']) - qtd_entregue
                                 if sobra > 0:
-                                    sh.append_row([r['id'], r['cliente'], r['produto'], sobra, sobra * peso_u, "pendente"])
+                                    sh.append_row([r['id'], r['cliente'], r['produto'], sobra, sobra * p_u, "pendente"])
                                 break
                         st.success("Baixa realizada!"); st.rerun()
 
@@ -295,16 +287,12 @@ else:
     op_full = ["Cadastro", "Produtos", "Pedidos", "Gestão de Rotas", "Gestão de Usuários", "Logs"]
     opcoes = op_full if user['modulos'] == 'todos' else user['modulos'].split(',')
     menu = st.sidebar.radio("Menu:", opcoes)
-    
     if menu == "Cadastro": tela_cadastro(user)
     elif menu == "Produtos": tela_produtos(user)
     elif menu == "Pedidos": tela_pedidos(user)
     elif menu == "Gestão de Rotas": tela_gestao_rotas(user)
     elif menu == "Gestão de Usuários": tela_usuarios(user)
     elif menu == "Logs":
-        try:
-            df_l = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
-            st.dataframe(df_l.sort_index(ascending=False), use_container_width=True)
-        except: st.info("Sem logs ainda.")
-        
+        df_l = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
+        st.dataframe(df_l.sort_index(ascending=False), use_container_width=True)
     if st.sidebar.button("Sair"): st.session_state.usuario_logado = None; st.rerun()
