@@ -46,61 +46,45 @@ def login_usuario(usuario, senha):
 def gerar_pdf_rota(df_matriz):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
-    pdf.set_font("Arial", "B", 14)
+    pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 10, f"MAPA DE CARREGAMENTO - {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align='C')
     pdf.ln(5)
-    pdf.set_font("Arial", "B", 7)
     
-    # Extrair colunas e remover IDs/Clientes da lista de produtos
-    cols = [c for c in df_matriz.columns if c not in ['id', 'cliente']]
-    col_width = 230 / (len(cols) + 1)
+    # Identificar colunas: assume que a segunda coluna é o nome do cliente
+    cols_dados = df_matriz.columns.tolist()
+    col_cliente = cols_dados[1] 
+    produtos = [c for c in cols_dados if c not in [cols_dados[0], col_cliente]]
     
-    pdf.cell(60, 7, "Cliente", 1, 0, 'C')
-    for col in cols:
-        pdf.cell(col_width, 7, str(col)[:10], 1, 0, 'C')
+    # Cabeçalho
+    pdf.set_font("Arial", "B", 8)
+    col_width = 190 / (len(produtos) + 1)
+    pdf.cell(60, 8, "Cliente", 1, 0, 'C')
+    for p in produtos:
+        pdf.cell(col_width, 8, str(p)[:12], 1, 0, 'C')
     pdf.ln()
     
-    pdf.set_font("Arial", "", 7)
+    # Linhas
+    pdf.set_font("Arial", "", 8)
     for _, row in df_matriz.iterrows():
-        label = str(row['cliente'])
-        is_total = any(x in label.upper() for x in ["TOTAL", "PESO"])
+        txt_cliente = str(row[col_cliente])
+        is_total = "TOTAL" in txt_cliente.upper()
         
         if is_total:
-            pdf.set_fill_color(230, 230, 230)
-            pdf.set_font("Arial", "B", 7)
+            pdf.set_fill_color(220, 220, 220)
+            pdf.set_font("Arial", "B", 8)
         else:
-            pdf.set_font("Arial", "", 7)
+            pdf.set_font("Arial", "", 8)
             
-        pdf.cell(60, 6, label[:35], 1, 0, 'L', is_total)
-        for col in cols:
-            val = row[col]
-            try:
-                txt = f"{float(val):.2f}" if "PESO" in label.upper() else str(int(float(val)))
-            except: txt = str(val)
-            pdf.cell(col_width, 6, txt, 1, 0, 'C', is_total)
+        pdf.cell(60, 7, txt_cliente[:35], 1, 0, 'L', is_total)
+        for p in produtos:
+            val = row[p]
+            txt_val = f"{float(val):.2f}" if "PESO" in txt_cliente.upper() else str(int(float(val or 0)))
+            pdf.cell(col_width, 7, txt_val, 1, 0, 'C', is_total)
         pdf.ln()
+        
     return bytes(pdf.output())
 
 # --- MÓDULOS DE TELA ---
-
-def tela_usuarios(user):
-    st.header("👥 Gestão de Usuários")
-    gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_user = sh.worksheet("usuarios")
-    # ... (mesma lógica anterior)
-    st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
-
-def tela_produtos(user):
-    st.header("📦 Cadastro de Produtos")
-    gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_prod = sh.worksheet("produtos")
-    with st.expander("➕ Novo Produto"):
-        with st.form("form_prod"):
-            desc = st.text_input("Descrição")
-            p_unit = st.number_input("Peso Unitário", min_value=0.0, step=0.01)
-            tipo = st.selectbox("Tipo de Peso", ["padrão", "variável"])
-            if st.form_submit_button("Cadastrar"):
-                aba_prod.append_row([desc, p_unit, tipo])
-                st.success("Cadastrado!"); st.rerun()
-    st.dataframe(pd.DataFrame(aba_prod.get_all_records()), use_container_width=True)
 
 def tela_cadastro(user):
     st.header("📝 Gestão de Pedidos")
@@ -108,157 +92,172 @@ def tela_cadastro(user):
     aba_pedidos = sh.worksheet("pedidos"); aba_produtos = sh.worksheet("produtos")
     aba_historico = sh.worksheet("historico")
     
-    # Busca IDs tanto em pedidos ativos quanto no histórico para nunca repetir
-    df_ped = pd.DataFrame(aba_pedidos.get_all_records())
-    df_hist = pd.DataFrame(aba_historico.get_all_records())
-    ids_totais = pd.concat([df_ped['id'], df_hist['id']]) if not df_hist.empty else df_ped['id']
+    # Lendo dados com tratamento de erro para valores vazios
+    df_ped = pd.DataFrame(aba_pedidos.get_all_records()).replace('', 0)
+    df_hist = pd.DataFrame(aba_historico.get_all_records()).replace('', 0)
     
-    proximo_id = int(pd.to_numeric(ids_totais, errors='coerce').max() or 0) + 1
+    ids_existentes = pd.concat([df_ped['id'], df_hist['id']]) if not df_hist.empty else df_ped['id']
+    proximo_id = int(pd.to_numeric(ids_existentes, errors='coerce').max() or 0) + 1
 
     df_prod = pd.DataFrame(aba_produtos.get_all_records())
-    tab_lançar, tab_editar = st.tabs(["🚀 Novo Lançamento", "✏️ Editar / Excluir"])
-
-    with tab_lançar:
-        with st.container(border=True):
-            st.subheader(f"Novo Pedido: #{proximo_id}")
-            c1, c2 = st.columns(2)
-            cliente = c1.text_input("Cliente")
-            uf = c2.selectbox("Estado", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
-            prod_sel = st.selectbox("Produto", [""] + df_prod['descricao'].tolist())
-            if prod_sel:
-                dados_p = df_prod[df_prod['descricao'] == prod_sel].iloc[0]
-                col_a, col_b = st.columns(2)
-                qtd = col_a.number_input("Caixas", min_value=1, step=1)
-                peso_f = col_b.number_input("Peso Real", min_value=0.1, value=float(qtd * float(dados_p['peso_unitario'])))
-                if st.button("Confirmar Lançamento"):
-                    aba_pedidos.append_row([proximo_id, f"{cliente} ({uf})", prod_sel, qtd, peso_f, "pendente"])
-                    st.success("Lançado!"); st.rerun()
-
-    with tab_editar:
-        df_pend = df_ped[df_ped['status'] == 'pendente'].copy()
-        if not df_pend.empty:
-            sel = st.selectbox("Pedido", df_pend.index, format_func=lambda x: f"#{df_pend.loc[x,'id']} - {df_pend.loc[x,'cliente']}")
-            # Lógica de edição similar à anterior...
+    
+    with st.container(border=True):
+        st.subheader(f"Novo Lançamento: #{proximo_id}")
+        c1, c2 = st.columns(2)
+        cliente = c1.text_input("Nome do Cliente")
+        uf = c2.selectbox("UF", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
+        prod_sel = st.selectbox("Selecione o Produto", [""] + df_prod['descricao'].tolist())
+        
+        if prod_sel:
+            p_info = df_prod[df_prod['descricao'] == prod_sel].iloc[0]
+            col_q, col_p = st.columns(2)
+            qtd = col_q.number_input("Qtd Caixas", min_value=1, step=1)
+            peso_sugestao = float(qtd * float(p_info['peso_unitario'] or 0))
+            peso_real = col_p.number_input("Peso Total (kg)", min_value=0.0, value=peso_sugestao)
+            
+            if st.button("🚀 Salvar Pedido", use_container_width=True):
+                if cliente:
+                    aba_pedidos.append_row([proximo_id, f"{cliente} ({uf})", prod_sel, qtd, peso_real, "pendente"])
+                    st.success("Pedido registrado!"); st.rerun()
+                else: st.error("Informe o cliente.")
 
 def tela_pedidos(user):
     st.header("🚚 Montagem de Carga")
     gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_pedidos = sh.worksheet("pedidos")
-    df_p = pd.DataFrame(aba_pedidos.get_all_records())
     
+    # Tratamento para evitar erro de conversão em células vazias
+    data = aba_pedidos.get_all_records()
+    if not data:
+        st.info("Nenhum pedido cadastrado."); return
+        
+    df_p = pd.DataFrame(data)
     df_p['caixas'] = pd.to_numeric(df_p['caixas'], errors='coerce').fillna(0)
     df_p['peso'] = pd.to_numeric(df_p['peso'], errors='coerce').fillna(0)
-    df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
-
-    if df_pendentes.empty:
-        st.info("Sem pedidos pendentes."); return
-
-    df_pendentes['uf_extraida'] = df_pendentes['cliente'].str.extract(r'\((.*?)\)')
-    ufs = sorted(df_pendentes['uf_extraida'].dropna().unique().tolist())
-    f_uf = st.sidebar.multiselect("Filtrar UF", options=ufs, default=ufs)
-    df_filtrado = df_pendentes[df_pendentes['uf_extraida'].isin(f_uf)]
-
-    selecao = st.dataframe(df_filtrado.drop(columns=['uf_extraida']), use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row")
     
-    if selecao.selection.rows:
-        df_sel = df_filtrado.iloc[selecao.selection.rows]
+    df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
+    if df_pendentes.empty:
+        st.info("Todos os pedidos já foram processados."); return
+
+    df_pendentes['uf'] = df_pendentes['cliente'].str.extract(r'\((.*?)\)')
+    ufs = sorted(df_pendentes['uf'].dropna().unique().tolist())
+    f_uf = st.sidebar.multiselect("Filtrar por UF", ufs, default=ufs)
+    df_filtrado = df_pendentes[df_pendentes['uf'].isin(f_uf)]
+
+    st.write("Selecione os pedidos para o mapa:")
+    sel = st.dataframe(
+        df_filtrado.drop(columns=['uf']), 
+        use_container_width=True, 
+        hide_index=True, 
+        on_select="rerun", 
+        selection_mode="multi-row"
+    )
+    
+    if sel.selection.rows:
+        df_sel = df_filtrado.iloc[sel.selection.rows]
         
-        # Matriz pivotada
-        matriz = df_sel.pivot_table(index=['id', 'cliente'], columns='produto', values='caixas', aggfunc='sum', fill_value=0)
-        matriz['TOTAL CX'] = matriz.sum(axis=1)
-        
-        totais_cx = matriz.sum().to_frame().T
-        totais_cx.index = pd.MultiIndex.from_tuples([(999998, 'TOTAL CAIXAS')])
-        
-        peso_resumo = df_sel.groupby('produto')['peso'].sum().to_frame().T
-        peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
-        peso_resumo.index = pd.MultiIndex.from_tuples([(999999, 'TOTAL PESO (kg)')])
-        peso_resumo['TOTAL CX'] = df_sel['peso'].sum()
-        
-        df_final = pd.concat([matriz, totais_cx, peso_resumo]).reset_index()
-        df_final.columns = [str(c) for c in df_final.columns]
-        
-        st.subheader("📊 Matriz de Carregamento")
-        st.dataframe(df_final, use_container_width=True, hide_index=True)
-        
-        c_pdf, c_conf = st.columns(2)
-        pdf_bytes = gerar_pdf_rota(df_final)
-        c_pdf.download_button("📄 Baixar PDF", data=pdf_bytes, file_name="mapa.pdf", mime="application/pdf")
-        
-        if c_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
-            ids = df_sel['id'].astype(str).tolist()
-            # Atualiza status para em rota
-            for i, row in enumerate(aba_pedidos.get_all_values()):
-                if str(row[0]) in ids and row[5] == 'pendente':
-                    aba_pedidos.update_cell(i+1, 6, "em rota")
-            st.rerun()
+        try:
+            # Pivotar a matriz
+            matriz = df_sel.pivot_table(index=['id', 'cliente'], columns='produto', values='caixas', aggfunc='sum', fill_value=0)
+            matriz['TOTAL CX'] = matriz.sum(axis=1)
+            
+            # Linha de Totais de Caixas
+            totais_cx = matriz.sum().to_frame().T
+            totais_cx.index = pd.MultiIndex.from_tuples([(999998, 'TOTAL CAIXAS')])
+            
+            # Linha de Totais de Peso
+            peso_resumo = df_sel.groupby('produto')['peso'].sum().to_frame().T
+            peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
+            peso_resumo.index = pd.MultiIndex.from_tuples([(999999, 'TOTAL PESO (kg)')])
+            peso_resumo['TOTAL CX'] = df_sel['peso'].sum()
+            
+            df_final = pd.concat([matriz, totais_cx, peso_resumo]).reset_index()
+            
+            st.subheader("📊 Matriz Gerada")
+            st.dataframe(df_final, use_container_width=True, hide_index=True)
+            
+            c_pdf, c_conf = st.columns(2)
+            
+            # Gerar PDF
+            pdf_b = gerar_pdf_rota(df_final)
+            c_pdf.download_button("📄 Baixar PDF do Mapa", data=pdf_b, file_name="mapa_carga.pdf", mime="application/pdf")
+            
+            if (user['nivel'] == 'total' or user['usuario'] == 'admin') and c_conf.button("🚚 Confirmar Saída em Rota", use_container_width=True):
+                ids_confirmar = df_sel['id'].astype(str).tolist()
+                raw_data = aba_pedidos.get_all_values()
+                for i, row in enumerate(raw_data):
+                    if str(row[0]) in ids_confirmar and row[5] == 'pendente':
+                        aba_pedidos.update_cell(i+1, 6, "em rota")
+                st.success("Pedidos atualizados para 'em rota'!"); st.rerun()
+                
+        except Exception as e:
+            st.error(f"Erro ao processar matriz: {e}")
 
 def tela_gestao_rotas(user):
-    st.header("🔄 Gestão de Pedidos em Rota")
-    sh_plan = get_gc().open(PLANILHA_NOME)
-    aba_pedidos = sh_plan.worksheet("pedidos")
-    aba_historico = sh_plan.worksheet("historico")
+    st.header("🔄 Baixa de Entregas")
+    sh = get_gc().open(PLANILHA_NOME)
+    aba_pedidos = sh.worksheet("pedidos")
+    aba_historico = sh.worksheet("historico")
     
     df = pd.DataFrame(aba_pedidos.get_all_records())
     df_rota = df[df['status'] == 'em rota'].copy()
     
     if df_rota.empty:
-        st.info("Nada em rota."); return
+        st.info("Nenhum pedido em trânsito no momento."); return
     
-    selecao = st.dataframe(df_rota, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row")
+    st.write("Selecione para dar baixa (Parcial ou Total):")
+    sel = st.dataframe(df_rota, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row")
     
-    if selecao.selection.rows:
-        df_sel = df_rota.iloc[selecao.selection.rows]
+    if sel.selection.rows:
+        df_sel = df_rota.iloc[sel.selection.rows]
         
-        for index, r in df_sel.iterrows():
-            with st.container(border=True):
-                st.write(f"**#{r['id']} - {r['cliente']}** ({r['produto']})")
-                qtd_entregue = st.number_input(f"Qtd Entregue", 0, int(r['caixas']), int(r['caixas']), key=f"q_{index}")
+        for _, r in df_sel.iterrows():
+            with st.expander(f"Baixa: {r['cliente']} - {r['produto']}", expanded=True):
+                c1, c2 = st.columns(2)
+                entregue = c1.number_input(f"Qtd Entregue (ID {r['id']})", 0, int(r['caixas']), int(r['caixas']), key=f"ent_{r['id']}")
                 
-                if st.button(f"Confirmar Baixa #{r['id']}", key=f"btn_{index}"):
-                    peso_u = float(r['peso']) / int(r['caixas'])
+                if c2.button(f"Confirmar Baixa #{r['id']}", key=f"btn_{r['id']}"):
+                    peso_un = float(r['peso']) / int(r['caixas'])
                     
-                    # 1. Move o que FOI ENTREGUE para o Histórico
-                    aba_historico.append_row([
-                        r['id'], r['cliente'], r['produto'], 
-                        qtd_entregue, qtd_entregue * peso_u, "entregue"
-                    ])
+                    # 1. Salva o que foi entregue no Histórico
+                    aba_historico.append_row([r['id'], r['cliente'], r['produto'], entregue, entregue * peso_un, "entregue"])
                     
-                    # 2. Se sobrou algo, cria novo pedido PENDENTE na aba pedidos
-                    sobra = int(r['caixas']) - qtd_entregue
+                    # 2. Se for parcial, gera novo pendente
+                    sobra = int(r['caixas']) - entregue
                     if sobra > 0:
-                        aba_pedidos.append_row([
-                            r['id'], r['cliente'], r['produto'], 
-                            sobra, sobra * peso_u, "pendente"
-                        ])
+                        aba_pedidos.append_row([r['id'], r['cliente'], r['produto'], sobra, sobra * peso_un, "pendente"])
                     
-                    # 3. Remove a linha antiga da aba PEDIDOS (limpeza total)
-                    # Procuramos a linha exata para deletar
-                    data_pedidos = aba_pedidos.get_all_values()
-                    for i, lin in enumerate(data_pedidos):
+                    # 3. Remove o registro original da aba pedidos
+                    data_raw = aba_pedidos.get_all_values()
+                    for i, lin in enumerate(data_raw):
                         if str(lin[0]) == str(r['id']) and lin[2] == r['produto'] and lin[5] == 'em rota':
                             aba_pedidos.delete_rows(i+1)
                             break
-                    
-                    st.success("Movido para histórico!"); st.rerun()
+                    st.rerun()
 
 # --- MAIN ---
-st.set_page_config(page_title="Sistema de Carga", layout="wide")
+st.set_page_config(page_title="Sistema Logístico", layout="wide")
 if 'usuario_logado' not in st.session_state: st.session_state.usuario_logado = None
 
 if st.session_state.usuario_logado is None:
-    st.title("Login")
-    with st.form("l"):
-        u, s = st.text_input("Usuário"), st.text_input("Senha", type="password")
+    st.title("Acesso ao Sistema")
+    with st.form("login"):
+        u = st.text_input("Usuário")
+        s = st.text_input("Senha", type="password")
         if st.form_submit_button("Entrar"):
-            d = login_usuario(u, s)
-            if d: st.session_state.usuario_logado = d; st.rerun()
-            else: st.error("Invalido")
+            user_data = login_usuario(u, s)
+            if user_data:
+                st.session_state.usuario_logado = user_data
+                st.rerun()
+            else: st.error("Dados incorretos.")
 else:
     user = st.session_state.usuario_logado
-    st.sidebar.title(f"👤 {user['usuario']}")
-    menu = st.sidebar.radio("Menu:", ["Cadastro", "Produtos", "Pedidos", "Gestão de Rotas"])
+    st.sidebar.title(f"Olá, {user['usuario']}")
+    menu = st.sidebar.radio("Navegação", ["Cadastro", "Pedidos", "Gestão de Rotas"])
+    
     if menu == "Cadastro": tela_cadastro(user)
-    elif menu == "Produtos": tela_produtos(user)
     elif menu == "Pedidos": tela_pedidos(user)
     elif menu == "Gestão de Rotas": tela_gestao_rotas(user)
-    if st.sidebar.button("Sair"): st.session_state.usuario_logado = None; st.rerun()
+    
+    if st.sidebar.button("Sair"):
+        st.session_state.usuario_logado = None
+        st.rerun()
