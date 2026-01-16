@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import gspread
+from fpdf import FPDF
+import io
 
 # --- CONFIGURAÇÕES INICIAIS ---
 PLANILHA_NOME = "Mapa_de_Pedidos" 
@@ -41,13 +43,55 @@ def login_usuario(usuario, senha):
         return user_match.iloc[0].to_dict() if not user_match.empty else None
     return None
 
-# --- NOVO MÓDULO: GESTÃO DE PRODUTOS ---
+def gerar_pdf_rota(df_matriz, total_peso_geral):
+    pdf = FPDF(orientation='L', unit='mm', format='A4')
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 14)
+    
+    pdf.cell(0, 10, f"MAPA DE CARREGAMENTO - {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align='C')
+    pdf.ln(5)
+    
+    pdf.set_font("Arial", "B", 8)
+    cols = df_matriz.columns.tolist()
+    col_width = 240 / (len(cols) + 1)
+    
+    # Cabeçalho da Tabela
+    pdf.cell(50, 7, "Cliente", 1, 0, 'C')
+    for col in cols:
+        pdf.cell(col_width, 7, str(col)[:10], 1, 0, 'C')
+    pdf.ln()
+    
+    # Corpo da Tabela
+    pdf.set_font("Arial", "", 8)
+    for index, row in df_matriz.iterrows():
+        # Estilo para linhas de totais
+        if index in ['TOTAL CAIXAS', 'TOTAL PESO (kg)']:
+            pdf.set_font("Arial", "B", 8)
+            pdf.set_fill_color(230, 230, 230)
+            fill = True
+        else:
+            pdf.set_font("Arial", "", 8)
+            fill = False
+        
+        # Ajuste do nome do cliente/index
+        txt_index = str(index[1]) if isinstance(index, tuple) else str(index)
+        pdf.cell(50, 6, txt_index[:30], 1, 0, 'L', fill)
+        
+        for col in cols:
+            val = row[col]
+            # Formatação: Peso com decimal, Caixas inteiro
+            txt_val = f"{val:.2f}" if "PESO" in str(index) else str(int(val))
+            pdf.cell(col_width, 6, txt_val, 1, 0, 'C', fill)
+        pdf.ln()
+    
+    return pdf.output()
+
+# --- MÓDULOS DE TELA ---
 def tela_produtos(user):
     st.header("📦 Cadastro de Produtos")
     gc = get_gc()
     sh = gc.open(PLANILHA_NOME)
     aba_prod = sh.worksheet("produtos")
-
     with st.expander("➕ Adicionar Novo Produto"):
         with st.form("form_prod"):
             desc = st.text_input("Descrição do Produto")
@@ -57,11 +101,8 @@ def tela_produtos(user):
                 aba_prod.append_row([desc, p_unit, tipo])
                 st.success("Produto cadastrado!")
                 st.rerun()
+    st.dataframe(pd.DataFrame(aba_prod.get_all_records()), use_container_width=True)
 
-    df_prod = pd.DataFrame(aba_prod.get_all_records())
-    st.dataframe(df_prod, use_container_width=True)
-
-# --- MÓDULO CADASTRO (ATUALIZADO) ---
 def tela_cadastro(user):
     st.header("📝 Lançamento de Pedidos")
     gc = get_gc()
@@ -69,64 +110,47 @@ def tela_cadastro(user):
     aba_pedidos = sh.worksheet("pedidos")
     aba_produtos = sh.worksheet("produtos")
     
-    # 1. Gerar ID Automático
     df_atual = pd.DataFrame(aba_pedidos.get_all_records())
-    if not df_atual.empty:
-        proximo_id = int(pd.to_numeric(df_atual['id']).max()) + 1
-    else:
-        proximo_id = 1
+    proximo_id = int(pd.to_numeric(df_atual['id']).max()) + 1 if not df_atual.empty else 1
 
-    # 2. Carregar Lista de Produtos
     df_p = pd.DataFrame(aba_produtos.get_all_records())
     lista_produtos = df_p['descricao'].tolist()
 
     with st.container(border=True):
         st.subheader(f"Novo Pedido: #{proximo_id}")
+        c1, c2 = st.columns(2)
+        cliente = c1.text_input("Cliente")
+        uf = c2.selectbox("Estado", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PB", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
+        prod_sel = st.selectbox("Produto", [""] + lista_produtos)
         
-        col1, col2 = st.columns(2)
-        cliente = col1.text_input("Cliente")
-        uf = col2.selectbox("Estado", ["SP", "RJ", "MG", "ES", "PR", "SC", "RS", "GO", "MT", "MS", "BA"])
-        
-        prod_selecionado = st.selectbox("Selecione o Produto", [""] + lista_produtos)
-        
-        if prod_selecionado:
-            dados_prod = df_p[df_p['descricao'] == prod_selecionado].iloc[0]
-            tipo_peso = dados_prod['tipo']
-            
-            c1, c2 = st.columns(2)
-            qtd = c1.number_input("Quantidade de Caixas", min_value=1, step=1)
-            
-            if tipo_peso == "padrão":
-                peso_calc = qtd * float(dados_prod['peso_unitario'])
-                peso_final = c2.number_input("Peso Total (Calculado)", value=peso_calc, disabled=True)
-                st.caption(f"ℹ️ Produto de peso padrão ({dados_prod['peso_unitario']}kg/un)")
+        if prod_sel:
+            dados_prod = df_p[df_p['descricao'] == prod_sel].iloc[0]
+            col_a, col_b = st.columns(2)
+            qtd = col_a.number_input("Caixas", min_value=1, step=1)
+            if dados_prod['tipo'] == "padrão":
+                peso_f = col_b.number_input("Peso (Calculado)", value=qtd * float(dados_prod['peso_unitario']), disabled=True)
             else:
-                peso_final = c2.number_input("Informe o Peso Real (Variável)", min_value=0.1)
+                peso_f = col_b.number_input("Informe o Peso Real", min_value=0.1)
 
             if st.button("Confirmar Lançamento"):
                 if cliente:
-                    aba_pedidos.append_row([proximo_id, f"{cliente} ({uf})", prod_selecionado, qtd, peso_final, "pendente"])
-                    registrar_log(user['usuario'], "CADASTRO", f"ID {proximo_id} - {cliente}")
-                    st.success("Pedido lançado!")
+                    aba_pedidos.append_row([proximo_id, f"{cliente} ({uf})", prod_sel, qtd, peso_f, "pendente"])
+                    registrar_log(user['usuario'], "CADASTRO", f"ID {proximo_id}")
+                    st.success("Lançado!")
                     st.rerun()
-                else:
-                    st.error("Informe o nome do cliente.")
 
-    st.divider()
-    st.subheader("Pedidos Pendentes")
-    st.dataframe(df_atual[df_atual['status'] == 'pendente'], use_container_width=True)
-
-# --- TELA DE PEDIDOS (MAPA DE CARGA) ---
 def tela_pedidos(user):
     st.header("🚚 Montagem de Carga")
     gc = get_gc()
     sh = gc.open(PLANILHA_NOME)
     aba_pedidos = sh.worksheet("pedidos")
     df_p = pd.DataFrame(aba_pedidos.get_all_records())
+    df_p['caixas'] = pd.to_numeric(df_p['caixas'], errors='coerce').fillna(0)
+    df_p['peso'] = pd.to_numeric(df_p['peso'], errors='coerce').fillna(0)
     df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
 
     if df_pendentes.empty:
-        st.info("Nenhum pedido pendente.")
+        st.info("Sem pedidos pendentes.")
         return
 
     selecao = st.dataframe(df_pendentes, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row")
@@ -134,26 +158,42 @@ def tela_pedidos(user):
     rows = selecao.selection.rows
     if rows:
         df_rota = df_pendentes.iloc[rows]
-        st.table(df_rota[['cliente', 'produto', 'caixas', 'peso']])
-        t_peso = df_rota['peso'].sum()
         
-        st.metric("Peso Total Selecionado", f"{t_peso:.2f} kg")
-        cap_max = st.number_input("Limite do Caminhão", value=1500.0)
+        # MATRIZ DINÂMICA
+        matriz = df_rota.pivot_table(index=['id', 'cliente'], columns='produto', values='caixas', aggfunc='sum', fill_value=0)
+        matriz['TOTAL CX'] = matriz.sum(axis=1)
         
-        if t_peso > cap_max:
-            st.error("EXCESSO DE CARGA!")
-        elif user['nivel'] != 'visualizacao':
-            if st.button("Confirmar Saída para Rota"):
-                ids_sel = df_rota['id'].astype(str).tolist()
-                dados_brutos = aba_pedidos.get_all_values()
-                for i, linha in enumerate(dados_brutos):
-                    if str(linha[0]) in ids_sel:
-                        aba_pedidos.update_cell(i + 1, 6, "em rota")
-                registrar_log(user['usuario'], "SAIDA", f"Carga {t_peso}kg")
-                st.rerun()
+        total_cx = matriz.sum(axis=0).to_frame().T
+        total_cx.index = ['TOTAL CAIXAS']
+        
+        peso_prod = df_rota.groupby('produto')['peso'].sum().to_frame().T
+        peso_prod = peso_prod.reindex(columns=matriz.columns).fillna(0)
+        peso_prod.loc['TOTAL PESO (kg)', 'TOTAL CX'] = df_rota['peso'].sum()
+        peso_prod.index = ['TOTAL PESO (kg)']
+        
+        df_final = pd.concat([matriz, total_cx, peso_prod])
+        
+        st.subheader("📊 Matriz de Carregamento")
+        st.dataframe(df_final, use_container_width=True)
+        
+        col_pdf, col_conf = st.columns(2)
+        
+        # Botão PDF
+        pdf_bytes = gerar_pdf_rota(df_final, df_rota['peso'].sum())
+        col_pdf.download_button("📄 Baixar PDF para Impressão", data=pdf_bytes, file_name="mapa_carga.pdf", mime="application/pdf", use_container_width=True)
+        
+        # Botão Confirmar
+        if user['nivel'] != 'visualizacao' and col_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
+            ids_sel = df_rota['id'].astype(str).tolist()
+            dados_planilha = aba_pedidos.get_all_values()
+            for i, linha in enumerate(dados_planilha):
+                if str(linha[0]) in ids_sel:
+                    aba_pedidos.update_cell(i + 1, 6, "em rota")
+            registrar_log(user['usuario'], "ROTA", f"Carga: {df_rota['peso'].sum()}kg")
+            st.rerun()
 
-# --- LOGIN E NAVEGAÇÃO ---
-st.set_page_config(page_title="Logística Dinâmica", layout="wide")
+# --- MAIN ---
+st.set_page_config(page_title="Sistema de Carga", layout="wide")
 
 if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
@@ -168,24 +208,17 @@ if st.session_state.usuario_logado is None:
             if dados:
                 st.session_state.usuario_logado = dados
                 st.rerun()
-            else: st.error("Erro!")
+            else: st.error("Incorreto")
 else:
     user = st.session_state.usuario_logado
     st.sidebar.title(f"👤 {user['usuario']}")
-    
-    if user['modulos'] == 'todos':
-        opcoes = ["Cadastro", "Produtos", "Pedidos", "Logs"]
-    else:
-        opcoes = user['modulos'].split(',')
-    
-    menu = st.sidebar.radio("Ir para:", opcoes)
+    opcoes = ["Cadastro", "Produtos", "Pedidos", "Logs"] if user['modulos'] == 'todos' else user['modulos'].split(',')
+    menu = st.sidebar.radio("Menu:", opcoes)
 
     if menu == "Cadastro": tela_cadastro(user)
     elif menu == "Produtos": tela_produtos(user)
     elif menu == "Pedidos": tela_pedidos(user)
-    elif menu == "Logs":
-        df_logs = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
-        st.dataframe(df_logs.sort_index(ascending=False))
+    elif menu == "Logs": st.dataframe(pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records()).sort_index(ascending=False))
 
     if st.sidebar.button("Sair"):
         st.session_state.usuario_logado = None
