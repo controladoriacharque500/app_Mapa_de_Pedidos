@@ -47,7 +47,7 @@ def gerar_pdf_rota(df_matriz):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
     pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 10, f"MAPA DE CARREGAMENTO - {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align='C')
+    pdf.cell(0, 10, f"MAPA DE CARREGAMENTO - {datetime.now().strftime('%d/%m/%Y')}", ln=True, align='C')
     pdf.ln(5)
     pdf.set_font("Arial", "B", 7)
     cols = df_matriz.columns.tolist()
@@ -252,7 +252,7 @@ def tela_gestao_rotas(user):
                     sh_hist.append_row([
                         r['id'], r['cliente'], r['produto'], qtd_s, 
                         round(qtd_s * peso_u, 2), "entregue", 
-                        datetime.now().strftime("%d/%m/%Y %H:%M")
+                        datetime.now().strftime("%d/%m/%Y")
                     ])
                     
                     # 2. Se sobrou algo, cria novo pedido pendente
