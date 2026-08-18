@@ -129,6 +129,113 @@ def tela_usuarios(user):
                 
     st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
 
+def processar_dados_api_para_pedidos(user):
+    """Lê a aba Dados_api, converte para o formato da aba pedidos e limpa o que foi processado."""
+    gc = get_gc()
+    if not gc:
+        return 0, "Erro na conexão com o Google Sheets."
+
+    sh = gc.open(PLANILHA_NOME)
+    aba_api = sh.worksheet("Dados_api")
+    aba_prod = sh.worksheet("produtos")
+    aba_pedidos = sh.worksheet("pedidos")
+    
+    try:
+        aba_hist = sh.worksheet("historico")
+        df_hist = pd.DataFrame(aba_hist.get_all_records())
+    except Exception:
+        df_hist = pd.DataFrame()
+
+    df_api = pd.DataFrame(aba_api.get_all_records())
+    df_prod = pd.DataFrame(aba_prod.get_all_records())
+    df_ped = pd.DataFrame(aba_pedidos.get_all_records())
+
+    if df_api.empty:
+        return 0, "Aba Dados_api está vazia."
+
+    # Mapeamento do De-Para: { 'PRODUTO_ERP': ('DESCRICAO_ABREVIADA', PESO_UNITARIO) }
+    de_para_map = {}
+    if not df_prod.empty and 'descricao_sistema' in df_prod.columns:
+        for _, r in df_prod.iterrows():
+            desc_sis = str(r.get('descricao_sistema', '')).strip()
+            if desc_sis:
+                desc_abrev = str(r.get('descricao', '')).strip()
+                try:
+                    p_unit = float(r.get('peso_unitario', 1))
+                except (ValueError, TypeError):
+                    p_unit = 1.0
+                de_para_map[desc_sis] = (desc_abrev, p_unit)
+
+    # Coleta pedidos já existentes em pedidos e historico para evitar duplicidade
+    pedidos_existentes = set()
+    if not df_ped.empty and 'NUMEROPEDIDOVENDA' in df_ped.columns:
+        pedidos_existentes.update(df_ped['NUMEROPEDIDOVENDA'].astype(str).str.strip().tolist())
+    if not df_hist.empty and 'NUMEROPEDIDOVENDA' in df_hist.columns:
+        pedidos_existentes.update(df_hist['NUMEROPEDIDOVENDA'].astype(str).str.strip().tolist())
+
+    # Determina o último ID na aba pedidos
+    ultimo_id = 0
+    if not df_ped.empty and 'id' in df_ped.columns:
+        ids_validos = pd.to_numeric(df_ped['id'], errors='coerce').dropna()
+        if not ids_validos.empty:
+            ultimo_id = int(ids_validos.max())
+
+    novas_linhas_pedidos = []
+    linhas_api_para_manter = [] # Itens que ainda não possuem De-Para cadastrado
+
+    for _, row in df_api.iterrows():
+        num_pedido = str(row.get('NUMEROPEDIDOVENDA', '')).strip()
+        prod_erp = str(row.get('PRODUTO', '')).strip()
+
+        # 1. Ignora se o pedido já existe no sistema
+        if num_pedido in pedidos_existentes:
+            continue
+
+        # 2. Verifica se o produto tem vínculo no De-Para
+        if prod_erp in de_para_map:
+            desc_abrev, peso_unit = de_para_map[prod_erp]
+            
+            try:
+                qtde_peso = float(row.get('QTDE', 0))
+            except (ValueError, TypeError):
+                qtde_peso = 0.0
+
+            # Cálculo de caixas (se peso_unitario for 0, evita divisão por zero)
+            caixas = int(round(qtde_peso / peso_unit)) if peso_unit > 0 else 0
+
+            cliente_fmt = f"{row.get('NOME_CLIENTE', '').strip()} ({row.get('UF', '').strip()})"
+            
+            ultimo_id += 1
+            # Colunas da aba pedidos:
+            # [id, cliente, produto, caixas, peso, status, NUMEROPEDIDOVENDA]
+            novas_linhas_pedidos.append([
+                ultimo_id, cliente_fmt, desc_abrev, caixas, qtde_peso, "pendente", num_pedido
+            ])
+        else:
+            # Mantém no Dados_api se ainda não tem vínculo De-Para
+            linhas_api_para_manter.append(row.tolist())
+
+    registros_processados = len(novas_linhas_pedidos)
+
+    if registros_processados > 0:
+        # Grava os novos pedidos na aba 'pedidos'
+        aba_pedidos.append_rows(novas_linhas_pedidos, value_input_option='USER_ENTERED')
+        registrar_log(user['usuario'], "IMPORTACAO_PEDIDOS", f"{registros_processados} pedidos transferidos de Dados_api para pedidos")
+
+        # Atualiza a aba Dados_api mantendo apenas os sem vínculo
+        aba_api.resize(rows=1000, cols=10)
+        valores_existentes = aba_api.get_all_values()
+        if len(valores_existentes) > 1:
+            aba_api.delete_rows(2, len(valores_existentes))
+
+        if linhas_api_para_manter:
+            aba_api.append_rows(linhas_api_para_manter, value_input_option='USER_ENTERED')
+
+        return registros_processados, f"✅ {registros_processados} item(ns) transferido(s) para a aba 'pedidos' com sucesso!"
+    
+    return 0, "Nenhum pedido pendente de processamento com De-Para válido."
+
+
 def tela_produtos(user):
     st.header("📦 Cadastro de Produtos e De-Para ERP")
     gc = get_gc()
@@ -158,41 +265,38 @@ def tela_produtos(user):
             df_api = pd.DataFrame(aba_dados_api.get_all_records())
             df_prod = pd.DataFrame(aba_prod.get_all_records())
 
-            # Garante a existência da coluna 'descricao_sistema' no DataFrame local
             if 'descricao_sistema' not in df_prod.columns:
                 df_prod['descricao_sistema'] = ""
 
             if not df_api.empty and 'PRODUTO' in df_api.columns:
-                # Produtos únicos vindos da API
                 prods_api_unicos = [str(p).strip() for p in df_api['PRODUTO'].dropna().unique() if str(p).strip() != ""]
-                
-                # Produtos do ERP que já foram vinculados na aba produtos
                 prods_ja_vinculados = [str(p).strip() for p in df_prod['descricao_sistema'].dropna().unique() if str(p).strip() != ""]
-
-                # Produtos do ERP pendentes de vínculo
                 prods_pendentes = [p for p in prods_api_unicos if p not in prods_ja_vinculados]
 
                 if not prods_pendentes:
-                    st.success("🎉 Todos os produtos da aba Dados_api já possuem vínculo!")
+                    st.success("🎉 Todos os produtos da aba Dados_api já possuem vínculo cadastrado!")
+                    if st.button("🚀 Processar Pedidos Pendentes Agora", type="primary", use_container_width=True):
+                        qtd, msg = processar_dados_api_para_pedidos(user)
+                        st.info(msg)
+                        st.rerun()
                 else:
                     st.info(f"Existem **{len(prods_pendentes)}** produtos da API sem vínculo com o cadastro local.")
                     
                     with st.form("form_depara"):
                         prod_erp_sel = st.selectbox("1. Selecione o Produto vindo do ERP (Dados_api):", options=prods_pendentes)
-                        
-                        # Lista de produtos locais cadastrados
                         prods_locais = df_prod['descricao'].tolist() if 'descricao' in df_prod.columns else []
                         prod_local_sel = st.selectbox("2. Vincule ao Produto Local equivalente (Abreviado):", options=prods_locais)
 
-                        if st.form_submit_button("💾 Salvar Vínculo De-Para"):
+                        if st.form_submit_button("💾 Salvar Vínculo De-Para e Processar Pedidos"):
                             if prod_erp_sel and prod_local_sel:
-                                # Encontra a linha na aba 'produtos' pelo nome da descrição local
                                 celula = aba_prod.find(prod_local_sel)
                                 if celula:
-                                    # Grava na Coluna D (4) da mesma linha
                                     aba_prod.update_cell(celula.row, 4, prod_erp_sel)
                                     registrar_log(user['usuario'], "DE_PARA", f"Vinculado '{prod_erp_sel}' -> '{prod_local_sel}'")
-                                    st.success(f"✅ Vínculo salvo! '{prod_erp_sel}' associado a '{prod_local_sel}'.")
+                                    
+                                    # Executa automaticamente a transferência para a aba de pedidos
+                                    qtd_proc, msg_proc = processar_dados_api_para_pedidos(user)
+                                    st.success(f"✅ Vínculo salvo! {msg_proc}")
                                     st.rerun()
                                 else:
                                     st.error("Produto local não encontrado na planilha.")
