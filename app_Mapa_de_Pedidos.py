@@ -129,8 +129,22 @@ def tela_usuarios(user):
                 
     st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
 
+def limpar_e_converter_float(valor):
+    """Converte valores com ponto ou vírgula em float de forma segura."""
+    if pd.isna(valor) or valor == "" or valor is None:
+        return 0.0
+    val_str = str(valor).strip()
+    # Se contiver vírgula, assume padrão brasileiro (ex: 7,227 -> 7.227)
+    if ',' in val_str:
+        val_str = val_str.replace('.', '').replace(',', '.')
+    try:
+        return float(val_str)
+    except ValueError:
+        return 0.0
+
+
 def processar_dados_api_para_pedidos(user):
-    """Lê a aba Dados_api, converte para o formato da aba pedidos e limpa o que foi processado ou já duplicado."""
+    """Lê a aba Dados_api, converte para o formato da aba pedidos com peso/caixas corrigidos."""
     gc = get_gc()
     if not gc:
         return 0, "Erro na conexão com o Google Sheets."
@@ -159,12 +173,11 @@ def processar_dados_api_para_pedidos(user):
             desc_sis = str(r.get('descricao_sistema', '')).strip()
             if desc_sis:
                 desc_abrev = str(r.get('descricao', '')).strip()
-                try:
-                    p_unit = float(r.get('peso_unitario', 1))
-                    if pd.isna(p_unit): p_unit = 1.0
-                except (ValueError, TypeError):
+                p_unit = limpar_e_converter_float(r.get('peso_unitario', 1.0))
+                tipo_peso = str(r.get('tipo', 'padrão')).strip().lower()
+                if p_unit <= 0:
                     p_unit = 1.0
-                de_para_map[desc_sis] = (desc_abrev, p_unit)
+                de_para_map[desc_sis] = (desc_abrev, p_unit, tipo_peso)
 
     pedidos_existentes = set()
     if not df_ped.empty and 'NUMEROPEDIDOVENDA' in df_ped.columns:
@@ -194,18 +207,19 @@ def processar_dados_api_para_pedidos(user):
             continue
 
         if prod_erp in de_para_map:
-            desc_abrev, peso_unit = de_para_map[prod_erp]
-            try:
-                qtde_peso = float(row.get('QTDE', 0))
-                if pd.isna(qtde_peso): qtde_peso = 0.0
-            except (ValueError, TypeError):
-                qtde_peso = 0.0
+            desc_abrev, peso_unit, tipo_peso = de_para_map[prod_erp]
+            qtde_peso = limpar_e_converter_float(row.get('QTDE', 0))
 
-            caixas = int(round(qtde_peso / peso_unit)) if peso_unit > 0 else 0
+            # Para produtos de peso variável (como máscara/orelha), 
+            # caixas devem ser calculadas como 1 se for fracionado ou pela divisão exata
+            if tipo_peso == "variável":
+                caixas = int(qtde_peso // peso_unit) if qtde_peso >= peso_unit else 1
+            else:
+                caixas = int(round(qtde_peso / peso_unit)) if peso_unit > 0 else 0
             
-            # Formatação do nome do cliente com Observação e UF
             nome_cli = str(row.get('NOME_CLIENTE', '')).strip()
-            obs_cli = str(row.get('OBSERVACAO', row.get('OBS', ''))).strip()
+            obs_raw = row.get('OBSERVACAO', row.get('OBS', ''))
+            obs_cli = str(obs_raw).strip() if pd.notna(obs_raw) and str(obs_raw).upper() != "NONE" else ""
             uf_cli = str(row.get('UF', '')).strip()
 
             if obs_cli:
@@ -214,8 +228,9 @@ def processar_dados_api_para_pedidos(user):
                 cliente_fmt = f"{nome_cli} ({uf_cli})"
             
             ultimo_id += 1
+            # Grava o peso exato com 2 casas decimais (ex: 7.23)
             novas_linhas_pedidos.append([
-                ultimo_id, cliente_fmt, desc_abrev, caixas, qtde_peso, "pendente", num_pedido
+                ultimo_id, cliente_fmt, desc_abrev, caixas, round(qtde_peso, 2), "pendente", num_pedido
             ])
         else:
             linhas_api_para_manter.append(row.tolist())
