@@ -496,22 +496,43 @@ def tela_gestao_rotas(user):
                 qtd_s = st.number_input(f"Qtd entregue #{r['id']}", 0, int(r['caixas']), int(r['caixas']), key=f"rot_{r['id']}")
                 if st.button(f"Confirmar Baixa {r['id']}"):
                     peso_u = float(r['peso']) / int(r['caixas']) if int(r['caixas']) > 0 else 0
-                    sh_hist.append_row([
-                        r['id'], r['cliente'], r['produto'], qtd_s, 
-                        round(qtd_s * peso_u, 2), "entregue", 
-                        datetime.now().strftime("%d/%m/%Y")
-                    ])
                     
+                    # Trata o número do pedido garantindo string tratada
+                    num_pedido = str(r.get('NUMEROPEDIDOVENDA', '')).strip()
+
+                    # 1. Grava no HISTÓRICO (8 Colunas: id, cliente, produto, caixas, peso, status, data, NUMEROPEDIDOVENDA)
+                    sh_hist.append_row([
+                        r['id'], 
+                        r['cliente'], 
+                        r['produto'], 
+                        qtd_s, 
+                        round(qtd_s * peso_u, 2), 
+                        "entregue", 
+                        datetime.now().strftime("%d/%m/%Y"),
+                        num_pedido
+                    ], value_input_option='USER_ENTERED')
+                    
+                    # 2. Se houver SOBRA, devolve para a aba PEDIDOS mantendo o NUMEROPEDIDOVENDA
                     sobra = int(r['caixas']) - qtd_s
                     if sobra > 0:
-                        sh_pedidos.append_row([r['id'], r['cliente'], r['produto'], sobra, round(sobra * peso_u, 2), "pendente"])
+                        sh_pedidos.append_row([
+                            r['id'], 
+                            r['cliente'], 
+                            r['produto'], 
+                            sobra, 
+                            round(sobra * peso_u, 2), 
+                            "pendente",
+                            num_pedido
+                        ], value_input_option='USER_ENTERED')
                     
+                    # 3. Remove a linha original em rota da aba PEDIDOS
                     data_ped = sh_pedidos.get_all_values()
                     for i, lin in enumerate(data_ped):
-                        if str(lin[0]) == str(r['id']) and lin[5] == "em rota":
+                        if len(lin) > 0 and str(lin[0]) == str(r['id']) and len(lin) >= 6 and lin[5] == "em rota":
                             sh_pedidos.delete_rows(i + 1)
                             break
-                    registrar_log(user['usuario'], "BAIXA", f"Baixa do pedido ID {r['id']}")
+
+                    registrar_log(user['usuario'], "BAIXA", f"Baixa do pedido ID {r['id']} (Pedido ERP: {num_pedido})")
                     st.rerun()
 
 # --- MAIN ---
