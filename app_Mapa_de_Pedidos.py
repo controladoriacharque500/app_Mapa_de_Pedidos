@@ -187,7 +187,7 @@ def processar_dados_api_para_pedidos(user):
         num_pedido = str(row.get('NUMEROPEDIDOVENDA', '')).strip()
         prod_erp = str(row.get('PRODUTO', '')).strip()
 
-        # 1. Se já foi cadastrado anteriormente, contabiliza como duplicado (não re-adiciona nem mantém em Dados_api)
+        # 1. Se já foi cadastrado anteriormente, contabiliza como duplicado
         if num_pedido in pedidos_existentes:
             pedidos_duplicados_count += 1
             continue
@@ -214,16 +214,13 @@ def processar_dados_api_para_pedidos(user):
     registros_processados = len(novas_linhas_pedidos)
 
     # LIMPEZA DA ABA DADOS_API
-    # Remove as linhas de dados, preservando o cabeçalho
     valores_existentes = aba_api.get_all_values()
     if len(valores_existentes) > 1:
         aba_api.delete_rows(2, len(valores_existentes))
 
-    # Se ainda restaram itens novos que dependem de vínculo De-Para, insere-os de volta
     if linhas_api_para_manter:
         aba_api.append_rows(linhas_api_para_manter, value_input_option='USER_ENTERED')
 
-    # AÇÕES DEPENDENDO DO RESULTADO
     if registros_processados > 0:
         aba_pedidos.append_rows(novas_linhas_pedidos, value_input_option='USER_ENTERED')
         registrar_log(user['usuario'], "IMPORTACAO_PEDIDOS", f"{registros_processados} pedidos transferidos de Dados_api para pedidos")
@@ -349,8 +346,8 @@ def tela_cadastro(user):
         else:
             st.success(f"Foram retornados **{len(df_api)}** itens pendentes da API.")
             
-            # Colunas correspondentes ao cabeçalho da sua imagem
-            cols_desejadas = ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO']
+            # Colunas exibidas na interface incluindo OBSERVACAO
+            cols_desejadas = ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO', 'OBSERVACAO']
             cols_presentes = [c for c in cols_desejadas if c in df_api.columns]
             
             st.dataframe(df_api[cols_presentes], use_container_width=True)
@@ -360,7 +357,6 @@ def tela_cadastro(user):
                     linhas_para_gravar = []
                     
                     for idx, row in df_api.iterrows():
-                        # Tratamento estrito de tipos nativos
                         num_pedido = int(row['NUMEROPEDIDOVENDA']) if str(row['NUMEROPEDIDOVENDA']).isdigit() else str(row['NUMEROPEDIDOVENDA'])
                         cliente = str(row.get('NOME_CLIENTE', ''))
                         uf = str(row.get('UF', ''))
@@ -372,22 +368,20 @@ def tela_cadastro(user):
                             qtde = 0.0
                             
                         status = str(row.get('STATUS_ATENDIMENTO', 'Pendente'))
+                        obs = str(row.get('OBSERVACAO', ''))
 
-                        # ID sequencial simples para a Coluna A (ID)
                         id_seq = idx + 1
                         
-                        # Estrutura idêntica às colunas A até G da planilha Dados_api:
-                        # [ID, NUMEROPEDIDOVENDA, NOME_CLIENTE, UF, PRODUTO, QTDE, STATUS_ATENDIMENTO]
-                        linhas_para_gravar.append([id_seq, num_pedido, cliente, uf, produto, qtde, status])
+                        # Estrutura das colunas A até H em Dados_api:
+                        # [ID, NUMEROPEDIDOVENDA, NOME_CLIENTE, UF, PRODUTO, QTDE, STATUS_ATENDIMENTO, OBSERVACAO]
+                        linhas_para_gravar.append([id_seq, num_pedido, cliente, uf, produto, qtde, status, obs])
 
                     try:
-                        # 1. Mantém o cabeçalho (linha 1) e limpa da linha 2 em diante
-                        aba_dados_api.resize(rows=1000, cols=10) # Garante espaço disponível
+                        aba_dados_api.resize(rows=1000, cols=10)
                         celulas_existentes = aba_dados_api.get_all_values()
                         if len(celulas_existentes) > 1:
                             aba_dados_api.delete_rows(2, len(celulas_existentes))
 
-                        # 2. Escreve os novos dados a partir da linha 2
                         aba_dados_api.append_rows(linhas_para_gravar, value_input_option='USER_ENTERED')
                         
                         registrar_log(user['usuario'], "IMPORTACAO_RAW", f"{len(linhas_para_gravar)} itens salvos em Dados_api")
@@ -495,7 +489,6 @@ def tela_gestao_rotas(user):
             for _, r in df_sel.iterrows():
                 st.markdown(f"**Item ID {r['id']} - {r['produto']} ({r['cliente']})**")
                 
-                # Input da quantidade entregue
                 qtd_s = st.number_input(
                     f"Qtd entregue #{r['id']}", 
                     min_value=0, 
@@ -507,7 +500,6 @@ def tela_gestao_rotas(user):
                 sobra = int(r['caixas']) - qtd_s
                 num_pedido_antigo = str(r.get('NUMEROPEDIDOVENDA', '')).strip()
 
-                # Se houver sobra (Baixa Parcial), solicita o novo número do pedido ERP
                 novo_num_pedido = num_pedido_antigo
                 if sobra > 0:
                     novo_num_pedido = st.text_input(
@@ -520,7 +512,6 @@ def tela_gestao_rotas(user):
                 if st.button(f"Confirmar Baixa {r['id']}", key=f"btn_baixa_{r['id']}"):
                     peso_u = float(r['peso']) / int(r['caixas']) if int(r['caixas']) > 0 else 0
                     
-                    # 1. Grava a quantidade ENTREGUE no HISTÓRICO com o número do pedido ORIGINAL
                     sh_hist.append_row([
                         r['id'], 
                         r['cliente'], 
@@ -532,7 +523,6 @@ def tela_gestao_rotas(user):
                         num_pedido_antigo
                     ], value_input_option='USER_ENTERED')
                     
-                    # 2. Se houver SOBRA, devolve para PEDIDOS com o NOVO número informado
                     if sobra > 0:
                         sh_pedidos.append_row([
                             r['id'], 
@@ -544,7 +534,6 @@ def tela_gestao_rotas(user):
                             novo_num_pedido
                         ], value_input_option='USER_ENTERED')
                     
-                    # 3. Remove a linha original "em rota" da aba PEDIDOS
                     data_ped = sh_pedidos.get_all_values()
                     for i, lin in enumerate(data_ped):
                         if len(lin) > 0 and str(lin[0]) == str(r['id']) and len(lin) >= 6 and lin[5] == "em rota":
