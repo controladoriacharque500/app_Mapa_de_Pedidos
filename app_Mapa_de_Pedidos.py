@@ -30,18 +30,24 @@ def get_gc():
 def registrar_log(usuario, acao, detalhes):
     try:
         gc = get_gc()
-        aba_log = gc.open(PLANILHA_NOME).worksheet("log_operacoes")
-        aba_log.append_row([datetime.now().strftime("%d/%m/%Y %H:%M:%S"), usuario, acao, detalhes])
-    except: pass
+        if gc:
+            aba_log = gc.open(PLANILHA_NOME).worksheet("log_operacoes")
+            aba_log.append_row([datetime.now().strftime("%d/%m/%Y %H:%M:%S"), usuario, acao, detalhes])
+    except Exception:
+        pass
 
 def login_usuario(usuario, senha):
     gc = get_gc()
     if gc:
-        sh = gc.open(PLANILHA_NOME)
-        wks = sh.worksheet("usuarios")
-        df_users = pd.DataFrame(wks.get_all_records())
-        user_match = df_users[(df_users['usuario'] == usuario) & (df_users['senha'].astype(str) == str(senha))]
-        return user_match.iloc[0].to_dict() if not user_match.empty else None
+        try:
+            sh = gc.open(PLANILHA_NOME)
+            wks = sh.worksheet("usuarios")
+            df_users = pd.DataFrame(wks.get_all_records())
+            user_match = df_users[(df_users['usuario'].astype(str) == str(usuario)) & (df_users['senha'].astype(str) == str(senha))]
+            return user_match.iloc[0].to_dict() if not user_match.empty else None
+        except Exception as e:
+            st.error(f"Erro ao consultar usuários: {e}")
+            return None
     return None
 
 def buscar_pedidos_api(api_url, data_inicio='2026-01-01'):
@@ -76,7 +82,8 @@ def gerar_pdf_rota(df_matriz):
         if fill: 
             pdf.set_fill_color(230, 230, 230)
             pdf.set_font("Arial", "B", 7)
-        else: pdf.set_font("Arial", "", 7)
+        else:
+            pdf.set_font("Arial", "", 7)
         pdf.cell(50, 6, label[:30], 1, 0, 'L', fill)
         for col in cols:
             val = row[col]
@@ -89,28 +96,48 @@ def gerar_pdf_rota(df_matriz):
 
 def tela_usuarios(user):
     st.header("👥 Gestão de Usuários e Permissões")
-    gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_user = sh.worksheet("usuarios")
+    gc = get_gc()
+    if not gc:
+        st.error("Erro ao conectar ao serviço do Google Sheets.")
+        return
+    sh = gc.open(PLANILHA_NOME)
+    aba_user = sh.worksheet("usuarios")
+    
     with st.expander("➕ Cadastrar / Editar Usuário"):
         with st.form("form_usuario"):
             novo_u = st.text_input("Usuário (Login)")
             nova_s = st.text_input("Senha", type="password")
             nivel = st.selectbox("Nível (Total libera botões de ação)", ["total", "visualizacao"])
-            m1 = st.checkbox("Cadastro", True); m2 = st.checkbox("Produtos", True)
-            m3 = st.checkbox("Pedidos", True); m4 = st.checkbox("Gestão de Rotas", True)
-            m5 = st.checkbox("Gestão de Usuários", False); m6 = st.checkbox("Logs", True); m7 = st.checkbox("Relatórios", True)
+            m1 = st.checkbox("Cadastro", True)
+            m2 = st.checkbox("Produtos", True)
+            m3 = st.checkbox("Pedidos", True)
+            m4 = st.checkbox("Gestão de Rotas", True)
+            m5 = st.checkbox("Gestão de Usuários", False)
+            m6 = st.checkbox("Logs", True)
+            m7 = st.checkbox("Relatórios", True)
+            
             if st.form_submit_button("Salvar"):
                 mods = [m for m, val in zip(["Cadastro", "Produtos", "Pedidos", "Gestão de Rotas", "Gestão de Usuários", "Logs", "Relatórios"], [m1, m2, m3, m4, m5, m6, m7]) if val]
                 df_u = pd.DataFrame(aba_user.get_all_records())
-                if novo_u in df_u['usuario'].values:
+                if not df_u.empty and novo_u in df_u['usuario'].values:
                     idx = df_u[df_u['usuario'] == novo_u].index[0] + 2
                     aba_user.delete_rows(int(idx))
                 aba_user.append_row([novo_u, nova_s, nivel, ",".join(mods)])
-                st.success("Usuário salvo!"); st.rerun()
+                registrar_log(user['usuario'], "USUÁRIO", f"Salvo/Atualizado usuário {novo_u}")
+                st.success("Usuário salvo com sucesso!")
+                st.rerun()
+                
     st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
 
 def tela_produtos(user):
     st.header("📦 Cadastro de Produtos")
-    gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_prod = sh.worksheet("produtos")
+    gc = get_gc()
+    if not gc:
+        st.error("Erro de conexão.")
+        return
+    sh = gc.open(PLANILHA_NOME)
+    aba_prod = sh.worksheet("produtos")
+    
     with st.expander("➕ Novo Produto"):
         with st.form("form_prod"):
             desc = st.text_input("Descrição")
@@ -118,7 +145,10 @@ def tela_produtos(user):
             tipo = st.selectbox("Tipo de Peso", ["padrão", "variável"])
             if st.form_submit_button("Cadastrar"):
                 aba_prod.append_row([desc, p_unit, tipo])
-                st.success("Cadastrado!"); st.rerun()
+                registrar_log(user['usuario'], "PRODUTO", f"Cadastrado produto {desc}")
+                st.success("Cadastrado com sucesso!")
+                st.rerun()
+                
     st.dataframe(pd.DataFrame(aba_prod.get_all_records()), use_container_width=True)
 
 def tela_cadastro(user):
@@ -129,167 +159,97 @@ def tela_cadastro(user):
         return
         
     sh = gc.open(PLANILHA_NOME)
-    aba_pedidos = sh.worksheet("pedidos")
-    aba_produtos = sh.worksheet("produtos")
     
-    # Atualiza a leitura das planilhas
-    df_ped = pd.DataFrame(aba_pedidos.get_all_records())
-    df_prod = pd.DataFrame(aba_produtos.get_all_records())
+    # Abre ou valida a aba Dados_api
+    try:
+        aba_dados_api = sh.worksheet("Dados_api")
+    except Exception:
+        st.error("Aba 'Dados_api' não encontrada no Google Sheets! Verifique o nome exatamente como criado.")
+        return
 
-    tab_api, tab_lançar, tab_editar = st.tabs(["🔄 Importar da API (ERP)", "🚀 Novo Lançamento Manual", "✏️ Editar / Excluir Pendentes"])
+    st.subheader("🔄 Importar Pedidos do ERP para 'Dados_api'")
+    api_url = st.secrets.get("API_URL", "https://surpass-entwine-sasquatch.ngrok-free.dev")
+    data_filtro = st.date_input("Buscar pedidos a partir de:", value=pd.to_datetime('2026-01-01'))
 
-    with tab_api:
-        st.subheader("Sincronizar Pedidos do ERP")
-        api_url = st.secrets.get("API_URL", "https://surpass-entwine-sasquatch.ngrok-free.dev")
-        data_filtro = st.date_input("Buscar pedidos a partir de:", value=pd.to_datetime('2026-01-01'))
+    if st.button("🔎 Buscar Pedidos Pendentes no ERP", use_container_width=True):
+        with st.spinner("Consultando ERP..."):
+            df_api = buscar_pedidos_api(api_url, data_inicio=data_filtro.strftime('%Y-%m-%d'))
+            st.session_state['df_api_bruto'] = df_api
 
-        # 1. BOTÃO DE BUSCAR
-        if st.button("🔎 Buscar Pedidos Pendentes no ERP", use_container_width=True):
-            with st.spinner("Consultando ERP..."):
-                df_api = buscar_pedidos_api(api_url, data_inicio=data_filtro.strftime('%Y-%m-%d'))
-            
-            if df_api.empty:
-                st.warning("Nenhum pedido encontrado na API para este período.")
-                st.session_state['df_novos_importar'] = pd.DataFrame()
-            else:
-                # Filtrar apenas Pendentes
-                if 'STATUS_ATENDIMENTO' in df_api.columns:
-                    df_api_pend = df_api[df_api['STATUS_ATENDIMENTO'] == 'Pendente'].copy()
-                else:
-                    df_api_pend = df_api.copy()
-
-                # Pega os IDs já existentes na planilha (trata colunas/planilha vazia)
-                pedidos_existentes = set()
-                if not df_ped.empty and 'id' in df_ped.columns:
-                    pedidos_existentes = set(df_ped['id'].astype(str).str.strip().unique())
-
-                # Filtra o que ainda NÃO está na planilha
-                df_novos = df_api_pend[~df_api_pend['NUMEROPEDIDOVENDA'].astype(str).str.strip().isin(pedidos_existentes)]
-
-                # Salva no session_state para manter ativo no clique do próximo botão
-                st.session_state['df_novos_importar'] = df_novos
-                st.session_state['df_api_full_preview'] = df_api
-
-        # 2. EXIBIÇÃO DOS RESULTADOS E BOTÃO DE GRAVAÇÃO (Fora do bloco do clique da busca)
-        if 'df_novos_importar' in st.session_state:
-            df_novos = st.session_state['df_novos_importar']
-            
-            if df_novos.empty:
-                st.info("Todos os pedidos pendentes consultados do ERP já constam na planilha.")
-                if 'df_api_full_preview' in st.session_state and not st.session_state['df_api_full_preview'].empty:
-                    st.write("📋 **Prévia de todos os registros retornados pela API:**")
-                    cols_preview = [c for c in ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO'] if c in st.session_state['df_api_full_preview'].columns]
-                    st.dataframe(st.session_state['df_api_full_preview'][cols_preview], use_container_width=True)
-            else:
-                st.success(f"Encontrados **{len(df_novos)}** novos itens pendentes prontos para importação!")
-                cols_show = [c for c in ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO'] if c in df_novos.columns]
-                st.dataframe(df_novos[cols_show], use_container_width=True)
-
-                # BOTÃO QUE EFETIVAMENTE GRAVA NA PLANILHA
-                if st.button("💾 Gravador: Salvar Novos Pedidos na Planilha", type="primary", use_container_width=True):
-                    with st.spinner("Gravando dados no Google Sheets..."):
-                        novas_linhas = []
-                        for _, row in df_novos.iterrows():
-                            ped_id = int(row['NUMEROPEDIDOVENDA']) if str(row['NUMEROPEDIDOVENDA']).isdigit() else str(row['NUMEROPEDIDOVENDA'])
-                            
-                            uf = str(row.get('UF', '')).strip()
-                            uf_str = f" ({uf})" if uf and uf not in ['None', 'nan', ''] else ""
-                            cliente_formatado = f"{row['NOME_CLIENTE']}{uf_str}"
-                            
-                            prod_nome = str(row['PRODUTO'])
-                            qtd = int(float(row['QTDE']))
-                            
-                            # Busca peso unitário na aba de produtos
-                            peso_unit = 0.0
-                            if not df_prod.empty and 'descricao' in df_prod.columns:
-                                match_prod = df_prod[df_prod['descricao'].str.upper() == prod_nome.upper()]
-                                if not match_prod.empty:
-                                    peso_unit = float(match_prod.iloc[0].get('peso_unitario', 0.0))
-                            
-                            peso_total = round(qtd * peso_unit, 2)
-                            
-                            # Formato da linha: [id, cliente, produto, caixas, peso, status]
-                            novas_linhas.append([ped_id, cliente_formatado, prod_nome, qtd, peso_total, "pendente"])
-
-                        try:
-                            # Grava as linhas na aba de pedidos
-                            aba_pedidos.append_rows(novas_linhas)
-                            registrar_log(user['usuario'], "IMPORTAÇÃO API", f"{len(novas_linhas)} itens importados")
-                            
-                            # Limpa os estados e recarrega
-                            del st.session_state['df_novos_importar']
-                            if 'df_api_full_preview' in st.session_state:
-                                del st.session_state['df_api_full_preview']
-                                
-                            st.success(f"✅ {len(novas_linhas)} itens gravados com sucesso na planilha!")
-                            st.rerun()
-                        except Exception as err:
-                            st.error(f"Erro ao gravar na planilha: {err}")
-
-    with tab_lançar:
-        proximo_id = int(pd.to_numeric(df_ped['id']).max()) + 1 if not df_ped.empty and 'id' in df_ped.columns and pd.to_numeric(df_ped['id'], errors='coerce').notna().any() else 1
-        with st.container(border=True):
-            st.subheader(f"Novo Pedido: #{proximo_id}")
-            c1, c2 = st.columns(2)
-            cliente = c1.text_input("Cliente")
-            uf = c2.selectbox("Estado", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
-            prod_sel = st.selectbox("Produto", [""] + (df_prod['descricao'].tolist() if not df_prod.empty and 'descricao' in df_prod.columns else []))
-            if prod_sel:
-                dados_p = df_prod[df_prod['descricao'] == prod_sel].iloc[0]
-                col_a, col_b = st.columns(2)
-                qtd = col_a.number_input("Caixas", min_value=1, step=1)
-                if dados_p['tipo'] == "padrão":
-                    peso_f = col_b.number_input("Peso (Calculado)", value=float(qtd * float(dados_p['peso_unitario'])), disabled=True)
-                else:
-                    peso_f = col_b.number_input("Peso Real", min_value=0.1)
-                if st.button("Confirmar Lançamento"):
-                    if cliente:
-                        aba_pedidos.append_row([proximo_id, f"{cliente} ({uf})", prod_sel, int(qtd), float(peso_f), "pendente"])
-                        registrar_log(user['usuario'], "CADASTRO", f"ID {proximo_id}")
-                        st.success("Lançado!"); st.rerun()
-
-    with tab_editar:
-        df_pend = df_ped[df_ped['status'] == 'pendente'].copy() if not df_ped.empty and 'status' in df_ped.columns else pd.DataFrame()
-        if df_pend.empty:
-            st.info("Não há pedidos pendentes para editar.")
+    if 'df_api_bruto' in st.session_state:
+        df_api = st.session_state['df_api_bruto']
+        
+        if df_api.empty:
+            st.warning("Nenhum pedido pendente encontrado na API para esta data.")
         else:
-            sel_edit = st.selectbox("Selecione o pedido", df_pend.index, format_func=lambda x: f"ID {df_pend.loc[x,'id']} - {df_pend.loc[x,'cliente']} - {df_pend.loc[x,'produto']}")
-            ped_sel = df_pend.loc[sel_edit]
-            with st.form("form_edit"):
-                ed_cli = st.text_input("Nome Cliente/UF", ped_sel['cliente'])
-                ed_qtd = st.number_input("Quantidade Caixas", value=int(ped_sel['caixas']), min_value=1)
-                
-                c_edit, c_del = st.columns(2)
-                if c_edit.form_submit_button("✅ Salvar Alterações", use_container_width=True):
-                    data = aba_pedidos.get_all_values()
-                    for i, r in enumerate(data):
-                        if str(r[0]) == str(ped_sel['id']):
-                            aba_pedidos.update_cell(i+1, 2, ed_cli)
-                            aba_pedidos.update_cell(i+1, 4, int(ed_qtd))
-                            p_u = float(ped_sel['peso']) / int(ped_sel['caixas']) if int(ped_sel['caixas']) > 0 else 0
-                            aba_pedidos.update_cell(i+1, 5, float(ed_qtd * p_u))
-                    st.success("Editado com sucesso!"); st.rerun()
-                
-                if c_del.form_submit_button("🗑️ EXCLUIR PEDIDO", use_container_width=True):
-                    data = aba_pedidos.get_all_values()
-                    for i, r in enumerate(data):
-                        if str(r[0]) == str(ped_sel['id']):
-                            aba_pedidos.delete_rows(i+1)
-                            st.warning("Pedido excluído!"); break
-                    st.rerun()
+            st.success(f"Foram retornados **{len(df_api)}** itens pendentes da API.")
+            
+            # Colunas correspondentes ao cabeçalho da sua imagem
+            cols_desejadas = ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO']
+            cols_presentes = [c for c in cols_desejadas if c in df_api.columns]
+            
+            st.dataframe(df_api[cols_presentes], use_container_width=True)
+
+            if st.button("💾 Gravar na Aba 'Dados_api'", type="primary", use_container_width=True):
+                with st.spinner("Enviando registros para a aba Dados_api..."):
+                    linhas_para_gravar = []
+                    
+                    for idx, row in df_api.iterrows():
+                        # Tratamento estrito de tipos nativos
+                        num_pedido = int(row['NUMEROPEDIDOVENDA']) if str(row['NUMEROPEDIDOVENDA']).isdigit() else str(row['NUMEROPEDIDOVENDA'])
+                        cliente = str(row.get('NOME_CLIENTE', ''))
+                        uf = str(row.get('UF', ''))
+                        produto = str(row.get('PRODUTO', ''))
+                        
+                        try:
+                            qtde = float(row.get('QTDE', 0))
+                        except (ValueError, TypeError):
+                            qtde = 0.0
+                            
+                        status = str(row.get('STATUS_ATENDIMENTO', 'Pendente'))
+
+                        # ID sequencial simples para a Coluna A (ID)
+                        id_seq = idx + 1
+                        
+                        # Estrutura idêntica às colunas A até G da planilha Dados_api:
+                        # [ID, NUMEROPEDIDOVENDA, NOME_CLIENTE, UF, PRODUTO, QTDE, STATUS_ATENDIMENTO]
+                        linhas_para_gravar.append([id_seq, num_pedido, cliente, uf, produto, qtde, status])
+
+                    try:
+                        # 1. Mantém o cabeçalho (linha 1) e limpa da linha 2 em diante
+                        aba_dados_api.resize(rows=1000, cols=10) # Garante espaço disponível
+                        celulas_existentes = aba_dados_api.get_all_values()
+                        if len(celulas_existentes) > 1:
+                            aba_dados_api.delete_rows(2, len(celulas_existentes))
+
+                        # 2. Escreve os novos dados a partir da linha 2
+                        aba_dados_api.append_rows(linhas_para_gravar, value_input_option='USER_ENTERED')
+                        
+                        registrar_log(user['usuario'], "IMPORTACAO_RAW", f"{len(linhas_para_gravar)} itens salvos em Dados_api")
+                        st.success(f"✅ Sucesso! {len(linhas_para_gravar)} registros gravados na aba **Dados_api**.")
+                    
+                    except Exception as err:
+                        st.error(f"Ocorreu um erro ao gravar via gspread: {err}")
 
 def tela_pedidos(user):
     st.header("🚚 Montagem de Carga")
-    gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_pedidos = sh.worksheet("pedidos")
+    gc = get_gc()
+    if not gc:
+        st.error("Erro de conexão.")
+        return
+    sh = gc.open(PLANILHA_NOME)
+    aba_pedidos = sh.worksheet("pedidos")
     df_p = pd.DataFrame(aba_pedidos.get_all_records())
     if df_p.empty:
-        st.info("Sem pedidos cadastrados."); return
+        st.info("Sem pedidos cadastrados.")
+        return
     df_p['caixas'] = pd.to_numeric(df_p['caixas'], errors='coerce').fillna(0)
     df_p['peso'] = pd.to_numeric(df_p['peso'], errors='coerce').fillna(0)
     df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
 
     if df_pendentes.empty:
-        st.info("Sem pedidos pendentes."); return
+        st.info("Sem pedidos pendentes.")
+        return
 
     df_pendentes['uf_extraida'] = df_pendentes['cliente'].str.extract(r'\((.*?)\)')
     ufs = sorted(df_pendentes['uf_extraida'].dropna().unique().tolist())
@@ -317,13 +277,15 @@ def tela_pedidos(user):
         try:
             pdf_bytes = gerar_pdf_rota(df_final)
             c_pdf.download_button("📄 Baixar PDF do Mapa", data=pdf_bytes, file_name=f"mapa_{datetime.now().strftime('%d%m_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
-        except Exception as e: c_pdf.error(f"Erro PDF: {e}")
+        except Exception as e:
+            c_pdf.error(f"Erro PDF: {e}")
         
         if (user['nivel'] == 'total' or user['usuario'] == 'admin') and c_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
             ids = df_sel['id'].astype(str).tolist()
             data = aba_pedidos.get_all_values()
             for i, lin in enumerate(data):
-                if str(lin[0]) in ids: aba_pedidos.update_cell(i + 1, 6, "em rota")
+                if str(lin[0]) in ids:
+                    aba_pedidos.update_cell(i + 1, 6, "em rota")
             registrar_log(user['usuario'], "ROTA", "Carga confirmada")
             st.rerun()
         elif user['nivel'] == 'visualizacao':
@@ -332,14 +294,21 @@ def tela_pedidos(user):
 def tela_gestao_rotas(user):
     st.header("🔄 Gestão de Pedidos em Rota")
     gc = get_gc()
+    if not gc:
+        st.error("Erro de conexão com o Google Sheets.")
+        return
     sh_pedidos = gc.open(PLANILHA_NOME).worksheet("pedidos")
     sh_hist = gc.open(PLANILHA_NOME).worksheet("historico")
     
     df = pd.DataFrame(sh_pedidos.get_all_records())
-    if df.empty: st.info("Nada em rota."); return
+    if df.empty:
+        st.info("Nada em rota.")
+        return
     df_rota = df[df['status'] == 'em rota'].copy()
     
-    if df_rota.empty: st.info("Nada em rota."); return
+    if df_rota.empty:
+        st.info("Nada em rota.")
+        return
     
     selecao = st.dataframe(df_rota, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row")
     
@@ -352,14 +321,16 @@ def tela_gestao_rotas(user):
                 ids = df_sel['id'].astype(str).tolist()
                 data = sh_pedidos.get_all_values()
                 for i, row in enumerate(data):
-                    if str(row[0]) in ids: sh_pedidos.update_cell(i + 1, 6, "pendente")
+                    if str(row[0]) in ids:
+                        sh_pedidos.update_cell(i + 1, 6, "pendente")
+                registrar_log(user['usuario'], "ROTA", f"Retorno confirmado para IDs: {ids}")
                 st.rerun()
         
         with c2.expander("📉 Confirmar Entrega (Move para Histórico)"):
             for _, r in df_sel.iterrows():
                 qtd_s = st.number_input(f"Qtd entregue #{r['id']}", 0, int(r['caixas']), int(r['caixas']), key=f"rot_{r['id']}")
                 if st.button(f"Confirmar Baixa {r['id']}"):
-                    peso_u = float(r['peso']) / int(r['caixas'])
+                    peso_u = float(r['peso']) / int(r['caixas']) if int(r['caixas']) > 0 else 0
                     sh_hist.append_row([
                         r['id'], r['cliente'], r['produto'], qtd_s, 
                         round(qtd_s * peso_u, 2), "entregue", 
@@ -375,11 +346,13 @@ def tela_gestao_rotas(user):
                         if str(lin[0]) == str(r['id']) and lin[5] == "em rota":
                             sh_pedidos.delete_rows(i + 1)
                             break
+                    registrar_log(user['usuario'], "BAIXA", f"Baixa do pedido ID {r['id']}")
                     st.rerun()
 
 # --- MAIN ---
 st.set_page_config(page_title="Sistema de Carga", layout="wide")
-if 'usuario_logado' not in st.session_state: st.session_state.usuario_logado = None
+if 'usuario_logado' not in st.session_state:
+    st.session_state.usuario_logado = None
 
 if st.session_state.usuario_logado is None:
     st.title("Login")
@@ -387,13 +360,16 @@ if st.session_state.usuario_logado is None:
         u, s = st.text_input("Usuário"), st.text_input("Senha", type="password")
         if st.form_submit_button("Entrar"):
             d = login_usuario(u, s)
-            if d: st.session_state.usuario_logado = d; st.rerun()
-            else: st.error("Login inválido")
+            if d:
+                st.session_state.usuario_logado = d
+                st.rerun()
+            else:
+                st.error("Login inválido")
 else:
     user = st.session_state.usuario_logado
     st.sidebar.title(f"👤 {user['usuario']}")
     op_full = ["Cadastro", "Produtos", "Pedidos", "Gestão de Rotas", "Relatórios", "Gestão de Usuários", "Logs"]
-    opcoes = op_full if user['modulos'] == 'todos' else user['modulos'].split(',')
+    opcoes = op_full if user.get('modulos') == 'todos' else user.get('modulos', '').split(',')
     menu = st.sidebar.radio("Menu:", opcoes)
     
     if menu == "Cadastro": tela_cadastro(user)
@@ -405,10 +381,16 @@ else:
         try:
             df_h = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("historico").get_all_records())
             st.dataframe(df_h.sort_index(ascending=False), use_container_width=True)
-        except: st.error("Aba 'historico' não encontrada ou vazia.")
+        except Exception:
+            st.error("Aba 'historico' não encontrada ou vazia.")
     elif menu == "Gestão de Usuários": tela_usuarios(user)
     elif menu == "Logs":
-        df_l = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
-        st.dataframe(df_l.sort_index(ascending=False), use_container_width=True)
+        try:
+            df_l = pd.DataFrame(get_gc().open(PLANILHA_NOME).worksheet("log_operacoes").get_all_records())
+            st.dataframe(df_l.sort_index(ascending=False), use_container_width=True)
+        except Exception:
+            st.error("Aba 'log_operacoes' não encontrada ou vazia.")
     
-    if st.sidebar.button("Sair"): st.session_state.usuario_logado = None; st.rerun()
+    if st.sidebar.button("Sair"):
+        st.session_state.usuario_logado = None
+        st.rerun()
