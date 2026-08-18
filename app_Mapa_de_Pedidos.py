@@ -142,13 +142,13 @@ def processar_dados_api_para_pedidos(user):
     
     try:
         aba_hist = sh.worksheet("historico")
-        df_hist = pd.DataFrame(aba_hist.get_all_records())
+        df_hist = pd.DataFrame(aba_hist.get_all_records()).fillna("")
     except Exception:
         df_hist = pd.DataFrame()
 
-    df_api = pd.DataFrame(aba_api.get_all_records())
-    df_prod = pd.DataFrame(aba_prod.get_all_records())
-    df_ped = pd.DataFrame(aba_pedidos.get_all_records())
+    df_api = pd.DataFrame(aba_api.get_all_records()).fillna("")
+    df_prod = pd.DataFrame(aba_prod.get_all_records()).fillna("")
+    df_ped = pd.DataFrame(aba_pedidos.get_all_records()).fillna("")
 
     if df_api.empty:
         return 0, "Aba Dados_api está vazia."
@@ -162,11 +162,12 @@ def processar_dados_api_para_pedidos(user):
                 desc_abrev = str(r.get('descricao', '')).strip()
                 try:
                     p_unit = float(r.get('peso_unitario', 1))
+                    if pd.isna(p_unit): p_unit = 1.0
                 except (ValueError, TypeError):
                     p_unit = 1.0
                 de_para_map[desc_sis] = (desc_abrev, p_unit)
 
-    # Coleta pedidos já existentes em 'pedidos' e 'historico'
+    # Coleta pedidos já existentes
     pedidos_existentes = set()
     if not df_ped.empty and 'NUMEROPEDIDOVENDA' in df_ped.columns:
         pedidos_existentes.update(df_ped['NUMEROPEDIDOVENDA'].astype(str).str.strip().tolist())
@@ -180,40 +181,40 @@ def processar_dados_api_para_pedidos(user):
             ultimo_id = int(ids_validos.max())
 
     novas_linhas_pedidos = []
-    linhas_api_para_manter = [] # Apenas itens sem vínculo De-Para
+    linhas_api_para_manter = [] 
     pedidos_duplicados_count = 0
 
     for _, row in df_api.iterrows():
         num_pedido = str(row.get('NUMEROPEDIDOVENDA', '')).strip()
         prod_erp = str(row.get('PRODUTO', '')).strip()
 
-        # 1. Se já foi cadastrado anteriormente, contabiliza como duplicado
+        if not num_pedido and not prod_erp:
+            continue
+
         if num_pedido in pedidos_existentes:
             pedidos_duplicados_count += 1
             continue
 
-        # 2. Se não é duplicado, verifica De-Para
         if prod_erp in de_para_map:
             desc_abrev, peso_unit = de_para_map[prod_erp]
             try:
                 qtde_peso = float(row.get('QTDE', 0))
+                if pd.isna(qtde_peso): qtde_peso = 0.0
             except (ValueError, TypeError):
                 qtde_peso = 0.0
 
             caixas = int(round(qtde_peso / peso_unit)) if peso_unit > 0 else 0
-            cliente_fmt = f"{row.get('NOME_CLIENTE', '').strip()} ({row.get('UF', '').strip()})"
+            cliente_fmt = f"{str(row.get('NOME_CLIENTE', '')).strip()} ({str(row.get('UF', '')).strip()})"
             
             ultimo_id += 1
             novas_linhas_pedidos.append([
                 ultimo_id, cliente_fmt, desc_abrev, caixas, qtde_peso, "pendente", num_pedido
             ])
         else:
-            # Mantém em Dados_api apenas se for novo E ainda não tiver vínculo cadastrado
             linhas_api_para_manter.append(row.tolist())
 
     registros_processados = len(novas_linhas_pedidos)
 
-    # LIMPEZA DA ABA DADOS_API
     valores_existentes = aba_api.get_all_values()
     if len(valores_existentes) > 1:
         aba_api.delete_rows(2, len(valores_existentes))
@@ -242,7 +243,6 @@ def tela_produtos(user):
     sh = gc.open(PLANILHA_NOME)
     aba_prod = sh.worksheet("produtos")
     
-    # 1. EXPANDER: NOVO PRODUTO
     with st.expander("➕ Novo Produto"):
         with st.form("form_prod"):
             desc = st.text_input("Descrição (Abreviada)")
@@ -255,12 +255,11 @@ def tela_produtos(user):
                 st.success("Cadastrado com sucesso!")
                 st.rerun()
 
-    # 2. EXPANDER: VINCULAÇÃO DE-PARA (ERP -> PRODUTO)
     with st.expander("🔗 Vincular Produtos Pendentes do ERP (De-Para)"):
         try:
             aba_dados_api = sh.worksheet("Dados_api")
-            df_api = pd.DataFrame(aba_dados_api.get_all_records())
-            df_prod = pd.DataFrame(aba_prod.get_all_records())
+            df_api = pd.DataFrame(aba_dados_api.get_all_records()).fillna("")
+            df_prod = pd.DataFrame(aba_prod.get_all_records()).fillna("")
 
             if 'descricao_sistema' not in df_prod.columns:
                 df_prod['descricao_sistema'] = ""
@@ -291,7 +290,6 @@ def tela_produtos(user):
                                     aba_prod.update_cell(celula.row, 4, prod_erp_sel)
                                     registrar_log(user['usuario'], "DE_PARA", f"Vinculado '{prod_erp_sel}' -> '{prod_local_sel}'")
                                     
-                                    # Executa automaticamente a transferência para a aba de pedidos
                                     qtd_proc, msg_proc = processar_dados_api_para_pedidos(user)
                                     st.success(f"✅ Vínculo salvo! {msg_proc}")
                                     st.rerun()
@@ -300,9 +298,17 @@ def tela_produtos(user):
                             else:
                                 st.warning("Selecione ambos os produtos para salvar.")
             else:
-                st.warning("Nenhum dado encontrado na aba 'Dados_api'. Importe os pedidos primeiro.")
+                st.info("Nenhum dado pendente encontrado na aba 'Dados_api'.")
         except Exception as e:
             st.error(f"Erro ao carregar dados para o De-Para: {e}")
+
+    st.subheader("📋 Produtos Cadastrados")
+    try:
+        dados_prod = aba_prod.get_all_records()
+        df_exibir = pd.DataFrame(dados_prod).fillna("")
+        st.dataframe(df_exibir, use_container_width=True)
+    except Exception as e:
+        st.error(f"Erro ao listar produtos: {e}")
 
     # 3. TABELA DE EXIBIÇÃO DOS PRODUTOS
     st.subheader("📋 Produtos Cadastrados")
