@@ -153,7 +153,7 @@ def limpar_e_converter_float(valor, padrao=0.0):
         return float(padrao)
 
 def processar_dados_api_para_pedidos(user):
-    """Lê a aba Dados_api, ajusta escala de peso e grava na aba pedidos."""
+    """Lê a aba Dados_api, ajusta escala de peso e caixas com inteligência e grava na aba pedidos."""
     gc = get_gc()
     if not gc:
         return 0, "Erro na conexão com o Google Sheets."
@@ -217,37 +217,43 @@ def processar_dados_api_para_pedidos(user):
 
         if prod_erp in de_para_map:
             desc_abrev, peso_unit, tipo_peso = de_para_map[prod_erp]
-            
+            peso_unit_seguro = peso_unit if (peso_unit and peso_unit > 0) else 1.0
+
             qtde_raw = str(row.get('QTDE', 0)).strip()
-            
             if "." in qtde_raw and "," not in qtde_raw:
-                qtde_limpa = qtde_raw.replace(".", "")
-                qtde_num = limpar_e_converter_float(qtde_limpa)
+                qtde_num = limpar_e_converter_float(qtde_raw.replace(".", ""))
             else:
                 qtde_num = limpar_e_converter_float(qtde_raw)
 
-            if qtde_num > 500:
-                qtde_peso = round(qtde_num / 1000.0, 3)
+            # --- LÓGICA INTELIGENTE DE CONVERSÃO DE PESO / CAIXAS ---
+            if tipo_peso == "padrão":
+                # Se a quantidade recebida for divisível ou múltipla exata do peso unitário
+                if qtde_num >= peso_unit_seguro and (qtde_num % peso_unit_seguro == 0):
+                    caixas = int(qtde_num // peso_unit_seguro)
+                    qtde_peso = round(qtde_num, 3)
+                elif qtde_num > 1000:  # Ex: enviou em gramas
+                    qtde_peso = round(qtde_num / 1000.0, 3)
+                    caixas = int(round(qtde_peso / peso_unit_seguro))
+                else:
+                    qtde_peso = round(qtde_num, 3)
+                    caixas = int(round(qtde_peso / peso_unit_seguro))
+                    if caixas == 0 and qtde_peso > 0:
+                        caixas = 1
             else:
-                qtde_peso = round(qtde_num, 3)
-
-            # --- PREVENÇÃO DO ERRO DE COMPARÇÃO (NoneType/0) ---
-            peso_unit_seguro = peso_unit if (peso_unit and peso_unit > 0) else 1.0
-
-            if tipo_peso == "variável":
+                # Produto de peso variável
+                if qtde_num > 1000 and (qtde_num % peso_unit_seguro != 0):
+                    qtde_peso = round(qtde_num / 1000.0, 3)
+                else:
+                    qtde_peso = round(qtde_num, 3)
+                
                 caixas = 1 if (0 < qtde_peso <= peso_unit_seguro) else int(round(qtde_peso / peso_unit_seguro))
-            else:
-                caixas = int(round(qtde_peso / peso_unit_seguro))
 
             nome_cli = str(row.get('NOME_CLIENTE', '')).strip()
             obs_raw = row.get('OBSERVACAO', row.get('OBS', ''))
             obs_cli = str(obs_raw).strip() if pd.notna(obs_raw) and str(obs_raw).upper() != "NONE" else ""
             uf_cli = str(row.get('UF', '')).strip()
 
-            if obs_cli:
-                cliente_fmt = f"{nome_cli} [{obs_cli}] ({uf_cli})"
-            else:
-                cliente_fmt = f"{nome_cli} ({uf_cli})"
+            cliente_fmt = f"{nome_cli} [{obs_cli}] ({uf_cli})" if obs_cli else f"{nome_cli} ({uf_cli})"
             
             ultimo_id += 1
             novas_linhas_pedidos.append([
@@ -271,6 +277,7 @@ def processar_dados_api_para_pedidos(user):
         return registros_processados, f"✅ {registros_processados} item(ns) transferido(s) com sucesso!"
 
     return 0, "Nenhum pedido pendente para processamento."
+   
 
 def tela_produtos(user):
     st.header("📦 Cadastro de Produtos e De-Para ERP")
