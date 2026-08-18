@@ -148,20 +148,7 @@ def limpar_e_converter_float(valor):
         except ValueError:
             return 0.0
 
-    try:
-        val_float = float(val_str)
-        # SE A API RETORNA PESO EM GRAMAS / MULTIPLICADO POR 1000 (ex: 7227 ou 7.227 no float):
-        # Caso o valor venha como 7227 (ou 7.227 lido como 7.227 mas que no ERP representa 7,227 kg com erro de escala)
-        if val_float > 1000 and "." not in val_str:
-            # Exemplo: se 7227 na verdade são 7.227 kg (gramas para kg)
-            return val_float / 1000.0
-        elif val_float > 500: 
-            # Ajuste de escala para pedidos com representação em gramas
-            return val_float / 1000.0
-            
-        return val_float
-    except ValueError:
-        return 0.0
+
 
 
 def processar_dados_api_para_pedidos(user):
