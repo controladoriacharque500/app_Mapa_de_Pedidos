@@ -130,7 +130,7 @@ def tela_usuarios(user):
     st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
 
 def tela_produtos(user):
-    st.header("📦 Cadastro de Produtos")
+    st.header("📦 Cadastro de Produtos e De-Para ERP")
     gc = get_gc()
     if not gc:
         st.error("Erro de conexão.")
@@ -138,18 +138,79 @@ def tela_produtos(user):
     sh = gc.open(PLANILHA_NOME)
     aba_prod = sh.worksheet("produtos")
     
+    # 1. EXPANDER: NOVO PRODUTO
     with st.expander("➕ Novo Produto"):
         with st.form("form_prod"):
-            desc = st.text_input("Descrição")
+            desc = st.text_input("Descrição (Abreviada)")
+            desc_sis = st.text_input("Descrição Sistema/ERP (Opcional)")
             p_unit = st.number_input("Peso Unitário", min_value=0.0, step=0.01)
             tipo = st.selectbox("Tipo de Peso", ["padrão", "variável"])
-            if st.form_submit_button("Cadastrar"):
-                aba_prod.append_row([desc, p_unit, tipo])
+            if st.form_submit_button("Cadastrar Produto"):
+                aba_prod.append_row([desc, p_unit, tipo, desc_sis])
                 registrar_log(user['usuario'], "PRODUTO", f"Cadastrado produto {desc}")
                 st.success("Cadastrado com sucesso!")
                 st.rerun()
+
+    # 2. EXPANDER: VINCULAÇÃO DE-PARA (ERP -> PRODUTO)
+    with st.expander("🔗 Vincular Produtos Pendentes do ERP (De-Para)"):
+        try:
+            aba_dados_api = sh.worksheet("Dados_api")
+            df_api = pd.DataFrame(aba_dados_api.get_all_records())
+            df_prod = pd.DataFrame(aba_prod.get_all_records())
+
+            # Garante a existência da coluna 'descricao_sistema' no DataFrame local
+            if 'descricao_sistema' not in df_prod.columns:
+                df_prod['descricao_sistema'] = ""
+
+            if not df_api.empty and 'PRODUTO' in df_api.columns:
+                # Produtos únicos vindos da API
+                prods_api_unicos = [str(p).strip() for p in df_api['PRODUTO'].dropna().unique() if str(p).strip() != ""]
                 
-    st.dataframe(pd.DataFrame(aba_prod.get_all_records()), use_container_width=True)
+                # Produtos do ERP que já foram vinculados na aba produtos
+                prods_ja_vinculados = [str(p).strip() for p in df_prod['descricao_sistema'].dropna().unique() if str(p).strip() != ""]
+
+                # Produtos do ERP pendentes de vínculo
+                prods_pendentes = [p for p in prods_api_unicos if p not in prods_ja_vinculados]
+
+                if not prods_pendentes:
+                    st.success("🎉 Todos os produtos da aba Dados_api já possuem vínculo!")
+                else:
+                    st.info(f"Existem **{len(prods_pendentes)}** produtos da API sem vínculo com o cadastro local.")
+                    
+                    with st.form("form_depara"):
+                        prod_erp_sel = st.selectbox("1. Selecione o Produto vindo do ERP (Dados_api):", options=prods_pendentes)
+                        
+                        # Lista de produtos locais cadastrados
+                        prods_locais = df_prod['descricao'].tolist() if 'descricao' in df_prod.columns else []
+                        prod_local_sel = st.selectbox("2. Vincule ao Produto Local equivalente (Abreviado):", options=prods_locais)
+
+                        if st.form_submit_button("💾 Salvar Vínculo De-Para"):
+                            if prod_erp_sel and prod_local_sel:
+                                # Encontra a linha na aba 'produtos' pelo nome da descrição local
+                                celula = aba_prod.find(prod_local_sel)
+                                if celula:
+                                    # Grava na Coluna D (4) da mesma linha
+                                    aba_prod.update_cell(celula.row, 4, prod_erp_sel)
+                                    registrar_log(user['usuario'], "DE_PARA", f"Vinculado '{prod_erp_sel}' -> '{prod_local_sel}'")
+                                    st.success(f"✅ Vínculo salvo! '{prod_erp_sel}' associado a '{prod_local_sel}'.")
+                                    st.rerun()
+                                else:
+                                    st.error("Produto local não encontrado na planilha.")
+                            else:
+                                st.warning("Selecione ambos os produtos para salvar.")
+            else:
+                st.warning("Nenhum dado encontrado na aba 'Dados_api'. Importe os pedidos primeiro.")
+        except Exception as e:
+            st.error(f"Erro ao carregar dados para o De-Para: {e}")
+
+    # 3. TABELA DE EXIBIÇÃO DOS PRODUTOS
+    st.subheader("📋 Produtos Cadastrados")
+    try:
+        dados_prod = aba_prod.get_all_records()
+        df_exibir = pd.DataFrame(dados_prod)
+        st.dataframe(df_exibir, use_container_width=True)
+    except Exception as e:
+        st.error(f"Erro ao listar produtos: {e}")
 
 def tela_cadastro(user):
     st.header("📝 Gestão de Pedidos")
