@@ -440,20 +440,43 @@ def tela_cadastro(user):
                     except Exception as err:
                         st.error(f"Ocorreu um erro ao gravar via gspread: {err}")
 
+def converter_numero_sheet(val):
+    """Converte valores lidos do Google Sheets para float tratando vírgulas de decimais PT-BR."""
+    if pd.isna(val) or val == "" or val is None:
+        return 0.0
+    val_str = str(val).strip()
+    
+    # Se contiver vírgula (ex: "7,227"), substitui por ponto decimal ("7.227")
+    if ',' in val_str:
+        val_str = val_str.replace('.', '').replace(',', '.')
+        
+    try:
+        return float(val_str)
+    except ValueError:
+        return 0.0
+
+
 def tela_pedidos(user):
     st.header("🚚 Montagem de Carga")
     gc = get_gc()
     if not gc:
         st.error("Erro de conexão.")
         return
+        
     sh = gc.open(PLANILHA_NOME)
     aba_pedidos = sh.worksheet("pedidos")
     df_p = pd.DataFrame(aba_pedidos.get_all_records())
+    
     if df_p.empty:
         st.info("Sem pedidos cadastrados.")
         return
-    df_p['caixas'] = pd.to_numeric(df_p['caixas'], errors='coerce').fillna(0)
-    df_p['peso'] = pd.to_numeric(df_p['peso'], errors='coerce').fillna(0)
+
+    # --- CORREÇÃO DA LEITURA DE CAIXAS E PESO ---
+    # Em vez do pd.to_numeric direto, usamos a conversão com tratamento de vírgula
+    df_p['caixas'] = df_p['caixas'].apply(converter_numero_sheet)
+    df_p['peso'] = df_p['peso'].apply(converter_numero_sheet)
+    # --------------------------------------------
+
     df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
 
     if df_pendentes.empty:
@@ -465,18 +488,29 @@ def tela_pedidos(user):
     f_uf = st.sidebar.multiselect("Filtrar por UF", options=ufs, default=ufs)
     df_filtrado = df_pendentes[df_pendentes['uf_extraida'].isin(f_uf)]
 
-    selecao = st.dataframe(df_filtrado.drop(columns=['uf_extraida']), use_container_width=True, hide_index=True, on_select="rerun", selection_mode="multi-row")
+    selecao = st.dataframe(
+        df_filtrado.drop(columns=['uf_extraida']), 
+        use_container_width=True, 
+        hide_index=True, 
+        on_select="rerun", 
+        selection_mode="multi-row"
+    )
     
     if selecao.selection.rows:
         df_sel = df_filtrado.iloc[selecao.selection.rows]
         matriz = df_sel.pivot_table(index='cliente', columns='produto', values='caixas', aggfunc='sum', fill_value=0)
         matriz['TOTAL CX'] = matriz.sum(axis=1)
+        
         totais_cx = matriz.sum().to_frame().T
         totais_cx.index = ['TOTAL CAIXAS']
+        
         peso_resumo = df_sel.groupby('produto')['peso'].sum().to_frame().T
         peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
         peso_resumo.index = ['TOTAL PESO (kg)']
-        peso_resumo['TOTAL CX'] = df_sel['peso'].sum()
+        
+        # Soma do peso mantendo a precisão decimal correta
+        peso_resumo['TOTAL CX'] = round(df_sel['peso'].sum(), 3)
+        
         df_final = pd.concat([matriz, totais_cx, peso_resumo])
         
         st.subheader("📊 Matriz de Carregamento")
@@ -485,7 +519,13 @@ def tela_pedidos(user):
         c_pdf, c_conf = st.columns(2)
         try:
             pdf_bytes = gerar_pdf_rota(df_final)
-            c_pdf.download_button("📄 Baixar PDF do Mapa", data=pdf_bytes, file_name=f"mapa_{datetime.now().strftime('%d%m_%H%M')}.pdf", mime="application/pdf", use_container_width=True)
+            c_pdf.download_button(
+                "📄 Baixar PDF do Mapa", 
+                data=pdf_bytes, 
+                file_name=f"mapa_{datetime.now().strftime('%d%m_%H%M')}.pdf", 
+                mime="application/pdf", 
+                use_container_width=True
+            )
         except Exception as e:
             c_pdf.error(f"Erro PDF: {e}")
         
