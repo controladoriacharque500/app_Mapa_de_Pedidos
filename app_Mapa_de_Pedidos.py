@@ -78,17 +78,27 @@ def gerar_pdf_rota(df_matriz):
     pdf.set_font("Arial", "", 7)
     for index, row in df_matriz.iterrows():
         label = str(index[1]) if isinstance(index, tuple) else str(index)
-        fill = index in ['TOTAL CAIXAS', 'TOTAL PESO (kg)']
-        if fill: 
+        is_total_row = index in ['TOTAL CAIXAS', 'TOTAL PESO (kg)']
+        
+        if is_total_row: 
             pdf.set_fill_color(230, 230, 230)
             pdf.set_font("Arial", "B", 7)
         else:
             pdf.set_font("Arial", "", 7)
-        pdf.cell(50, 6, label[:30], 1, 0, 'L', fill)
+            
+        pdf.cell(50, 6, label[:30], 1, 0, 'L', is_total_row)
+        
         for col in cols:
             val = row[col]
-            txt = f"{val:.2f}" if "PESO" in str(index) else str(int(val))
-            pdf.cell(col_width, 6, txt, 1, 0, 'C', fill)
+            
+            # --- TRATAMENTO PARA ITENS ZERADOS NO PDF ---
+            # Se for 0 (e não for linha de total), deixa a célula em branco
+            if not is_total_row and (pd.isna(val) or val == 0):
+                txt = ""
+            else:
+                txt = f"{val:.2f}" if "PESO" in str(index) else str(int(val))
+                
+            pdf.cell(col_width, 6, txt, 1, 0, 'C', is_total_row)
         pdf.ln()
     return bytes(pdf.output())
 
@@ -129,27 +139,18 @@ def tela_usuarios(user):
                 
     st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
 
-def limpar_e_converter_float(valor):
-    """
-    Trata valores numéricos vindos do ERP.
-    Se o valor contiver ponto e for um inteiro formatado (ex: '7.227'),
-    ou se a API retornar o peso em gramas/inteiro alto, ajusta a escala.
-    """
+def limpar_e_converter_float(valor, padrao=0.0):
+    """Trata conversões de número garantindo retorno float seguro."""
     if pd.isna(valor) or valor == "" or valor is None:
-        return 0.0
+        return float(padrao)
     
     val_str = str(valor).strip()
-    
-    # Se vier com vírgula (padrão PT-BR: "7,23" -> 7.23)
     if ',' in val_str:
         val_str = val_str.replace('.', '').replace(',', '.')
-        try:
-            return float(val_str)
-        except ValueError:
-            return 0.0
-
-
-
+    try:
+        return float(val_str)
+    except ValueError:
+        return float(padrao)
 
 def processar_dados_api_para_pedidos(user):
     """Lê a aba Dados_api, ajusta escala de peso e grava na aba pedidos."""
@@ -181,7 +182,7 @@ def processar_dados_api_para_pedidos(user):
             desc_sis = str(r.get('descricao_sistema', '')).strip()
             if desc_sis:
                 desc_abrev = str(r.get('descricao', '')).strip()
-                p_unit = limpar_e_converter_float(r.get('peso_unitario', 1.0))
+                p_unit = limpar_e_converter_float(r.get('peso_unitario'), padrao=1.0)
                 tipo_peso = str(r.get('tipo', 'padrão')).strip().lower()
                 if p_unit <= 0:
                     p_unit = 1.0
@@ -217,28 +218,26 @@ def processar_dados_api_para_pedidos(user):
         if prod_erp in de_para_map:
             desc_abrev, peso_unit, tipo_peso = de_para_map[prod_erp]
             
-            # Captura bruta do ERP
             qtde_raw = str(row.get('QTDE', 0)).strip()
             
-            # Força remoção de ponto caso venha como "7.227" e converte
             if "." in qtde_raw and "," not in qtde_raw:
-                # Remove ponto de milhar/formatação incorreta
                 qtde_limpa = qtde_raw.replace(".", "")
-                qtde_num = float(qtde_limpa)
+                qtde_num = limpar_e_converter_float(qtde_limpa)
             else:
                 qtde_num = limpar_e_converter_float(qtde_raw)
 
-            # Se o número resultante for alto (ex: 7227), divide por 1000 para virar 7.227 kg
             if qtde_num > 500:
                 qtde_peso = round(qtde_num / 1000.0, 3)
             else:
                 qtde_peso = round(qtde_num, 3)
 
-            # Cálculo do número de caixas
+            # --- PREVENÇÃO DO ERRO DE COMPARÇÃO (NoneType/0) ---
+            peso_unit_seguro = peso_unit if (peso_unit and peso_unit > 0) else 1.0
+
             if tipo_peso == "variável":
-                caixas = 1 if (0 < qtde_peso <= peso_unit) else int(round(qtde_peso / peso_unit))
+                caixas = 1 if (0 < qtde_peso <= peso_unit_seguro) else int(round(qtde_peso / peso_unit_seguro))
             else:
-                caixas = int(round(qtde_peso / peso_unit)) if peso_unit > 0 else 0
+                caixas = int(round(qtde_peso / peso_unit_seguro))
 
             nome_cli = str(row.get('NOME_CLIENTE', '')).strip()
             obs_raw = row.get('OBSERVACAO', row.get('OBS', ''))
@@ -272,7 +271,6 @@ def processar_dados_api_para_pedidos(user):
         return registros_processados, f"✅ {registros_processados} item(ns) transferido(s) com sucesso!"
 
     return 0, "Nenhum pedido pendente para processamento."
-
 
 def tela_produtos(user):
     st.header("📦 Cadastro de Produtos e De-Para ERP")
@@ -359,7 +357,6 @@ def tela_cadastro(user):
         
     sh = gc.open(PLANILHA_NOME)
     
-    # Abre ou valida a aba Dados_api
     try:
         aba_dados_api = sh.worksheet("Dados_api")
     except Exception:
@@ -383,7 +380,6 @@ def tela_cadastro(user):
         else:
             st.success(f"Foram retornados **{len(df_api)}** itens pendentes da API.")
             
-            # Colunas exibidas na interface incluindo OBSERVACAO
             cols_desejadas = ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO', 'OBSERVACAO']
             cols_presentes = [c for c in cols_desejadas if c in df_api.columns]
             
@@ -408,9 +404,6 @@ def tela_cadastro(user):
                         obs = str(row.get('OBSERVACAO', ''))
 
                         id_seq = idx + 1
-                        
-                        # Estrutura das colunas A até H em Dados_api:
-                        # [ID, NUMEROPEDIDOVENDA, NOME_CLIENTE, UF, PRODUTO, QTDE, STATUS_ATENDIMENTO, OBSERVACAO]
                         linhas_para_gravar.append([id_seq, num_pedido, cliente, uf, produto, qtde, status, obs])
 
                     try:
@@ -428,24 +421,13 @@ def tela_cadastro(user):
                         st.error(f"Ocorreu um erro ao gravar via gspread: {err}")
 
 def converter_numero_sheet(val):
-    """
-    Elimina a parte decimal (tudo após vírgula ou ponto)
-    para evitar inflar o peso na leitura de strings do Google Sheets.
-    Ex: '7,227' -> 7 | '7.227' -> 7 | '20' -> 20
-    """
     if pd.isna(val) or val == "" or val is None:
         return 0
-    
-    val_str = str(val).strip()
-    
-    # Corta o texto na primeira vírgula ou ponto que encontrar
-    val_str = val_str.split(',')[0].split('.')[0]
-    
+    val_str = str(val).strip().split(',')[0].split('.')[0]
     try:
         return int(val_str)
     except ValueError:
         return 0
-
 
 def tela_pedidos(user):
     st.header("🚚 Montagem de Carga")
@@ -462,11 +444,8 @@ def tela_pedidos(user):
         st.info("Sem pedidos cadastrados.")
         return
 
-    # --- CORREÇÃO DA LEITURA DE CAIXAS E PESO ---
-    # Em vez do pd.to_numeric direto, usamos a conversão com tratamento de vírgula
     df_p['caixas'] = df_p['caixas'].apply(converter_numero_sheet)
     df_p['peso'] = df_p['peso'].apply(converter_numero_sheet)
-    # --------------------------------------------
 
     df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
 
@@ -499,7 +478,6 @@ def tela_pedidos(user):
         peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
         peso_resumo.index = ['TOTAL PESO (kg)']
         
-        # Soma do peso mantendo a precisão decimal correta
         peso_resumo['TOTAL CX'] = round(df_sel['peso'].sum(), 3)
         
         df_final = pd.concat([matriz, totais_cx, peso_resumo])
