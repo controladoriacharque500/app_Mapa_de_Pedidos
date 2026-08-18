@@ -153,7 +153,6 @@ def processar_dados_api_para_pedidos(user):
     if df_api.empty:
         return 0, "Aba Dados_api está vazia."
 
-    # Mapeamento do De-Para: { 'PRODUTO_ERP': ('DESCRICAO_ABREVIADA', PESO_UNITARIO) }
     de_para_map = {}
     if not df_prod.empty and 'descricao_sistema' in df_prod.columns:
         for _, r in df_prod.iterrows():
@@ -167,7 +166,6 @@ def processar_dados_api_para_pedidos(user):
                     p_unit = 1.0
                 de_para_map[desc_sis] = (desc_abrev, p_unit)
 
-    # Coleta pedidos já existentes
     pedidos_existentes = set()
     if not df_ped.empty and 'NUMEROPEDIDOVENDA' in df_ped.columns:
         pedidos_existentes.update(df_ped['NUMEROPEDIDOVENDA'].astype(str).str.strip().tolist())
@@ -204,7 +202,16 @@ def processar_dados_api_para_pedidos(user):
                 qtde_peso = 0.0
 
             caixas = int(round(qtde_peso / peso_unit)) if peso_unit > 0 else 0
-            cliente_fmt = f"{str(row.get('NOME_CLIENTE', '')).strip()} ({str(row.get('UF', '')).strip()})"
+            
+            # Formatação do nome do cliente com Observação e UF
+            nome_cli = str(row.get('NOME_CLIENTE', '')).strip()
+            obs_cli = str(row.get('OBSERVACAO', row.get('OBS', ''))).strip()
+            uf_cli = str(row.get('UF', '')).strip()
+
+            if obs_cli:
+                cliente_fmt = f"{nome_cli} [{obs_cli}] ({uf_cli})"
+            else:
+                cliente_fmt = f"{nome_cli} ({uf_cli})"
             
             ultimo_id += 1
             novas_linhas_pedidos.append([
@@ -306,15 +313,6 @@ def tela_produtos(user):
     try:
         dados_prod = aba_prod.get_all_records()
         df_exibir = pd.DataFrame(dados_prod).fillna("")
-        st.dataframe(df_exibir, use_container_width=True)
-    except Exception as e:
-        st.error(f"Erro ao listar produtos: {e}")
-
-    # 3. TABELA DE EXIBIÇÃO DOS PRODUTOS
-    st.subheader("📋 Produtos Cadastrados")
-    try:
-        dados_prod = aba_prod.get_all_records()
-        df_exibir = pd.DataFrame(dados_prod)
         st.dataframe(df_exibir, use_container_width=True)
     except Exception as e:
         st.error(f"Erro ao listar produtos: {e}")
