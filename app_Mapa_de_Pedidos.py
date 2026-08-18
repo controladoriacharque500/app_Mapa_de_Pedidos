@@ -441,19 +441,23 @@ def tela_cadastro(user):
                         st.error(f"Ocorreu um erro ao gravar via gspread: {err}")
 
 def converter_numero_sheet(val):
-    """Converte valores lidos do Google Sheets para float tratando vírgulas de decimais PT-BR."""
+    """
+    Elimina a parte decimal (tudo após vírgula ou ponto)
+    para evitar inflar o peso na leitura de strings do Google Sheets.
+    Ex: '7,227' -> 7 | '7.227' -> 7 | '20' -> 20
+    """
     if pd.isna(val) or val == "" or val is None:
-        return 0.0
+        return 0
+    
     val_str = str(val).strip()
     
-    # Se contiver vírgula (ex: "7,227"), substitui por ponto decimal ("7.227")
-    if ',' in val_str:
-        val_str = val_str.replace('.', '').replace(',', '.')
-        
+    # Corta o texto na primeira vírgula ou ponto que encontrar
+    val_str = val_str.split(',')[0].split('.')[0]
+    
     try:
-        return float(val_str)
+        return int(val_str)
     except ValueError:
-        return 0.0
+        return 0
 
 
 def tela_pedidos(user):
