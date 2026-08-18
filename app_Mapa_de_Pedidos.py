@@ -130,21 +130,42 @@ def tela_usuarios(user):
     st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
 
 def limpar_e_converter_float(valor):
-    """Converte valores com ponto ou vírgula em float de forma segura."""
+    """
+    Trata valores numéricos vindos do ERP.
+    Se o valor contiver ponto e for um inteiro formatado (ex: '7.227'),
+    ou se a API retornar o peso em gramas/inteiro alto, ajusta a escala.
+    """
     if pd.isna(valor) or valor == "" or valor is None:
         return 0.0
+    
     val_str = str(valor).strip()
-    # Se contiver vírgula, assume padrão brasileiro (ex: 7,227 -> 7.227)
+    
+    # Se vier com vírgula (padrão PT-BR: "7,23" -> 7.23)
     if ',' in val_str:
         val_str = val_str.replace('.', '').replace(',', '.')
+        try:
+            return float(val_str)
+        except ValueError:
+            return 0.0
+
     try:
-        return float(val_str)
+        val_float = float(val_str)
+        # SE A API RETORNA PESO EM GRAMAS / MULTIPLICADO POR 1000 (ex: 7227 ou 7.227 no float):
+        # Caso o valor venha como 7227 (ou 7.227 lido como 7.227 mas que no ERP representa 7,227 kg com erro de escala)
+        if val_float > 1000 and "." not in val_str:
+            # Exemplo: se 7227 na verdade são 7.227 kg (gramas para kg)
+            return val_float / 1000.0
+        elif val_float > 500: 
+            # Ajuste de escala para pedidos com representação em gramas
+            return val_float / 1000.0
+            
+        return val_float
     except ValueError:
         return 0.0
 
 
 def processar_dados_api_para_pedidos(user):
-    """Lê a aba Dados_api, converte para o formato da aba pedidos com peso/caixas corrigidos."""
+    """Lê a aba Dados_api, ajusta escala de peso e grava na aba pedidos."""
     gc = get_gc()
     if not gc:
         return 0, "Erro na conexão com o Google Sheets."
@@ -208,15 +229,30 @@ def processar_dados_api_para_pedidos(user):
 
         if prod_erp in de_para_map:
             desc_abrev, peso_unit, tipo_peso = de_para_map[prod_erp]
-            qtde_peso = limpar_e_converter_float(row.get('QTDE', 0))
+            
+            # Captura bruta do ERP
+            qtde_raw = str(row.get('QTDE', 0)).strip()
+            
+            # Força remoção de ponto caso venha como "7.227" e converte
+            if "." in qtde_raw and "," not in qtde_raw:
+                # Remove ponto de milhar/formatação incorreta
+                qtde_limpa = qtde_raw.replace(".", "")
+                qtde_num = float(qtde_limpa)
+            else:
+                qtde_num = limpar_e_converter_float(qtde_raw)
 
-            # Para produtos de peso variável (como máscara/orelha), 
-            # caixas devem ser calculadas como 1 se for fracionado ou pela divisão exata
+            # Se o número resultante for alto (ex: 7227), divide por 1000 para virar 7.227 kg
+            if qtde_num > 500:
+                qtde_peso = round(qtde_num / 1000.0, 3)
+            else:
+                qtde_peso = round(qtde_num, 3)
+
+            # Cálculo do número de caixas
             if tipo_peso == "variável":
-                caixas = int(qtde_peso // peso_unit) if qtde_peso >= peso_unit else 1
+                caixas = 1 if (0 < qtde_peso <= peso_unit) else int(round(qtde_peso / peso_unit))
             else:
                 caixas = int(round(qtde_peso / peso_unit)) if peso_unit > 0 else 0
-            
+
             nome_cli = str(row.get('NOME_CLIENTE', '')).strip()
             obs_raw = row.get('OBSERVACAO', row.get('OBS', ''))
             obs_cli = str(obs_raw).strip() if pd.notna(obs_raw) and str(obs_raw).upper() != "NONE" else ""
@@ -228,9 +264,8 @@ def processar_dados_api_para_pedidos(user):
                 cliente_fmt = f"{nome_cli} ({uf_cli})"
             
             ultimo_id += 1
-            # Grava o peso exato com 2 casas decimais (ex: 7.23)
             novas_linhas_pedidos.append([
-                ultimo_id, cliente_fmt, desc_abrev, caixas, round(qtde_peso, 2), "pendente", num_pedido
+                ultimo_id, cliente_fmt, desc_abrev, caixas, qtde_peso, "pendente", num_pedido
             ])
         else:
             linhas_api_para_manter.append(row.tolist())
@@ -248,10 +283,6 @@ def processar_dados_api_para_pedidos(user):
         aba_pedidos.append_rows(novas_linhas_pedidos, value_input_option='USER_ENTERED')
         registrar_log(user['usuario'], "IMPORTACAO_PEDIDOS", f"{registros_processados} pedidos transferidos de Dados_api para pedidos")
         return registros_processados, f"✅ {registros_processados} item(ns) transferido(s) com sucesso!"
-
-    if pedidos_duplicados_count > 0 and not linhas_api_para_manter:
-        registrar_log(user['usuario'], "LIMPEZA_API", "Dados_api limpo por conter apenas pedidos já cadastrados")
-        return 0, f"🧹 A aba Dados_api continha {pedidos_duplicados_count} registro(s) que já constavam no sistema. A aba foi limpa com sucesso!"
 
     return 0, "Nenhum pedido pendente para processamento."
 
