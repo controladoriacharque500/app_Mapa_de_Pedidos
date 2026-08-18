@@ -130,7 +130,7 @@ def tela_usuarios(user):
     st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
 
 def processar_dados_api_para_pedidos(user):
-    """Lê a aba Dados_api, converte para o formato da aba pedidos e limpa o que foi processado."""
+    """Lê a aba Dados_api, converte para o formato da aba pedidos e limpa o que foi processado ou já duplicado."""
     gc = get_gc()
     if not gc:
         return 0, "Erro na conexão com o Google Sheets."
@@ -166,14 +166,13 @@ def processar_dados_api_para_pedidos(user):
                     p_unit = 1.0
                 de_para_map[desc_sis] = (desc_abrev, p_unit)
 
-    # Coleta pedidos já existentes em pedidos e historico para evitar duplicidade
+    # Coleta pedidos já existentes em 'pedidos' e 'historico'
     pedidos_existentes = set()
     if not df_ped.empty and 'NUMEROPEDIDOVENDA' in df_ped.columns:
         pedidos_existentes.update(df_ped['NUMEROPEDIDOVENDA'].astype(str).str.strip().tolist())
     if not df_hist.empty and 'NUMEROPEDIDOVENDA' in df_hist.columns:
         pedidos_existentes.update(df_hist['NUMEROPEDIDOVENDA'].astype(str).str.strip().tolist())
 
-    # Determina o último ID na aba pedidos
     ultimo_id = 0
     if not df_ped.empty and 'id' in df_ped.columns:
         ids_validos = pd.to_numeric(df_ped['id'], errors='coerce').dropna()
@@ -181,59 +180,60 @@ def processar_dados_api_para_pedidos(user):
             ultimo_id = int(ids_validos.max())
 
     novas_linhas_pedidos = []
-    linhas_api_para_manter = [] # Itens que ainda não possuem De-Para cadastrado
+    linhas_api_para_manter = [] # Apenas itens sem vínculo De-Para
+    pedidos_duplicados_count = 0
 
     for _, row in df_api.iterrows():
         num_pedido = str(row.get('NUMEROPEDIDOVENDA', '')).strip()
         prod_erp = str(row.get('PRODUTO', '')).strip()
 
-        # 1. Ignora se o pedido já existe no sistema
+        # 1. Se já foi cadastrado anteriormente, contabiliza como duplicado (não re-adiciona nem mantém em Dados_api)
         if num_pedido in pedidos_existentes:
+            pedidos_duplicados_count += 1
             continue
 
-        # 2. Verifica se o produto tem vínculo no De-Para
+        # 2. Se não é duplicado, verifica De-Para
         if prod_erp in de_para_map:
             desc_abrev, peso_unit = de_para_map[prod_erp]
-            
             try:
                 qtde_peso = float(row.get('QTDE', 0))
             except (ValueError, TypeError):
                 qtde_peso = 0.0
 
-            # Cálculo de caixas (se peso_unitario for 0, evita divisão por zero)
             caixas = int(round(qtde_peso / peso_unit)) if peso_unit > 0 else 0
-
             cliente_fmt = f"{row.get('NOME_CLIENTE', '').strip()} ({row.get('UF', '').strip()})"
             
             ultimo_id += 1
-            # Colunas da aba pedidos:
-            # [id, cliente, produto, caixas, peso, status, NUMEROPEDIDOVENDA]
             novas_linhas_pedidos.append([
                 ultimo_id, cliente_fmt, desc_abrev, caixas, qtde_peso, "pendente", num_pedido
             ])
         else:
-            # Mantém no Dados_api se ainda não tem vínculo De-Para
+            # Mantém em Dados_api apenas se for novo E ainda não tiver vínculo cadastrado
             linhas_api_para_manter.append(row.tolist())
 
     registros_processados = len(novas_linhas_pedidos)
 
+    # LIMPEZA DA ABA DADOS_API
+    # Remove as linhas de dados, preservando o cabeçalho
+    valores_existentes = aba_api.get_all_values()
+    if len(valores_existentes) > 1:
+        aba_api.delete_rows(2, len(valores_existentes))
+
+    # Se ainda restaram itens novos que dependem de vínculo De-Para, insere-os de volta
+    if linhas_api_para_manter:
+        aba_api.append_rows(linhas_api_para_manter, value_input_option='USER_ENTERED')
+
+    # AÇÕES DEPENDENDO DO RESULTADO
     if registros_processados > 0:
-        # Grava os novos pedidos na aba 'pedidos'
         aba_pedidos.append_rows(novas_linhas_pedidos, value_input_option='USER_ENTERED')
         registrar_log(user['usuario'], "IMPORTACAO_PEDIDOS", f"{registros_processados} pedidos transferidos de Dados_api para pedidos")
+        return registros_processados, f"✅ {registros_processados} item(ns) transferido(s) com sucesso!"
 
-        # Atualiza a aba Dados_api mantendo apenas os sem vínculo
-        aba_api.resize(rows=1000, cols=10)
-        valores_existentes = aba_api.get_all_values()
-        if len(valores_existentes) > 1:
-            aba_api.delete_rows(2, len(valores_existentes))
+    if pedidos_duplicados_count > 0 and not linhas_api_para_manter:
+        registrar_log(user['usuario'], "LIMPEZA_API", "Dados_api limpo por conter apenas pedidos já cadastrados")
+        return 0, f"🧹 A aba Dados_api continha {pedidos_duplicados_count} registro(s) que já constavam no sistema. A aba foi limpa com sucesso!"
 
-        if linhas_api_para_manter:
-            aba_api.append_rows(linhas_api_para_manter, value_input_option='USER_ENTERED')
-
-        return registros_processados, f"✅ {registros_processados} item(ns) transferido(s) para a aba 'pedidos' com sucesso!"
-    
-    return 0, "Nenhum pedido pendente de processamento com De-Para válido."
+    return 0, "Nenhum pedido pendente para processamento."
 
 
 def tela_produtos(user):
