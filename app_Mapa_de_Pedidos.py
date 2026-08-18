@@ -141,15 +141,24 @@ def tela_cadastro(user):
             if df_api.empty:
                 st.warning("Nenhum pedido encontrado na API para este período.")
             else:
-                # Filtrar pelo status do ERP se existir
+                # 1. Filtrar apenas STATUS_ATENDIMENTO == 'Pendente'
                 if 'STATUS_ATENDIMENTO' in df_api.columns:
                     df_api_pend = df_api[df_api['STATUS_ATENDIMENTO'] == 'Pendente'].copy()
                 else:
                     df_api_pend = df_api.copy()
 
-                # Identificar IDs já presentes na planilha
-                pedidos_existentes = set(df_ped['id'].astype(str).unique()) if not df_ped.empty and 'id' in df_ped.columns else set()
-                df_novos = df_api_pend[~df_api_pend['NUMEROPEDIDOVENDA'].astype(str).isin(pedidos_existentes)]
+                # 2. Ler novamente a planilha atual para evitar estado defasado
+                dados_planilha = aba_pedidos.get_all_records()
+                df_ped_atual = pd.DataFrame(dados_planilha)
+
+                # 3. Obter IDs já gravados (tratando caso da planilha estar vazia)
+                if not df_ped_atual.empty and 'id' in df_ped_atual.columns:
+                    pedidos_existentes = set(df_ped_atual['id'].astype(str).str.strip().unique())
+                else:
+                    pedidos_existentes = set()
+
+                # 4. Filtrar novos pedidos que ainda não estão na planilha
+                df_novos = df_api_pend[~df_api_pend['NUMEROPEDIDOVENDA'].astype(str).str.strip().isin(pedidos_existentes)]
 
                 if df_novos.empty:
                     st.info("Todos os pedidos pendentes consultados do ERP já constam na planilha.")
@@ -161,31 +170,42 @@ def tela_cadastro(user):
                     cols_show = [c for c in ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO'] if c in df_novos.columns]
                     st.dataframe(df_novos[cols_show], use_container_width=True)
 
-                    if st.button("💾 Importar Novos Pedidos para a Planilha", type="primary"):
-                        novas_linhas = []
-                        for _, row in df_novos.iterrows():
-                            ped_id = row['NUMEROPEDIDOVENDA']
-                            
-                            uf = str(row.get('UF', '')).strip()
-                            uf_str = f" ({uf})" if uf and uf != 'None' and uf != 'nan' else ""
-                            cliente_formatado = f"{row['NOME_CLIENTE']}{uf_str}"
-                            
-                            prod_nome = row['PRODUTO']
-                            qtd = int(row['QTDE'])
-                            
-                            peso_unit = 0.0
-                            if not df_prod.empty and 'descricao' in df_prod.columns:
-                                match_prod = df_prod[df_prod['descricao'].str.upper() == str(prod_nome).upper()]
-                                if not match_prod.empty:
-                                    peso_unit = float(match_prod.iloc[0].get('peso_unitario', 0.0))
-                            
-                            peso_total = round(qtd * peso_unit, 2)
-                            novas_linhas.append([ped_id, cliente_formatado, prod_nome, qtd, peso_total, "pendente"])
+                    # Armazena os novos dados no session_state para garantir persistência ao clicar no botão
+                    st.session_state['df_novos_importar'] = df_novos
 
-                        aba_pedidos.append_rows(novas_linhas)
-                        registrar_log(user['usuario'], "IMPORTAÇÃO API", f"{len(novas_linhas)} itens importados")
-                        st.success(f"{len(novas_linhas)} itens inseridos com sucesso!")
-                        st.rerun()
+        # Botão de gravação fora do bloco 'if do clique' para não perder estado
+        if 'df_novos_importar' in st.session_state and not st.session_state['df_novos_importar'].empty:
+            df_para_gravar = st.session_state['df_novos_importar']
+            if st.button("💾 Gravador: Salvar Novos Pedidos na Planilha", type="primary", use_container_width=True):
+                novas_linhas = []
+                for _, row in df_para_gravar.iterrows():
+                    ped_id = str(row['NUMEROPEDIDOVENDA'])
+                    
+                    uf = str(row.get('UF', '')).strip()
+                    uf_str = f" ({uf})" if uf and uf not in ['None', 'nan', ''] else ""
+                    cliente_formatado = f"{row['NOME_CLIENTE']}{uf_str}"
+                    
+                    prod_nome = row['PRODUTO']
+                    qtd = int(row['QTDE'])
+                    
+                    # Busca peso unitário se a tabela produtos existir
+                    peso_unit = 0.0
+                    if not df_prod.empty and 'descricao' in df_prod.columns:
+                        match_prod = df_prod[df_prod['descricao'].str.upper() == str(prod_nome).upper()]
+                        if not match_prod.empty:
+                            peso_unit = float(match_prod.iloc[0].get('peso_unitario', 0.0))
+                    
+                    peso_total = round(qtd * peso_unit, 2)
+                    
+                    # Garante conversão de tipos nativos do Python para gravação via JSON no gspread
+                    novas_linhas.append([int(ped_id) if ped_id.isdigit() else ped_id, cliente_formatado, str(prod_nome), qtd, peso_total, "pendente"])
+
+                aba_pedidos.append_rows(novas_linhas)
+                registrar_log(user['usuario'], "IMPORTAÇÃO API", f"{len(novas_linhas)} itens importados")
+                
+                del st.session_state['df_novos_importar']
+                st.success(f"{len(novas_linhas)} itens inseridos com sucesso na planilha!")
+                st.rerun()
 
     with tab_lançar:
         proximo_id = int(pd.to_numeric(df_ped['id']).max()) + 1 if not df_ped.empty and 'id' in df_ped.columns else 1
