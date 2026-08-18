@@ -141,32 +141,34 @@ def tela_cadastro(user):
             if df_api.empty:
                 st.warning("Nenhum pedido encontrado na API para este período.")
             else:
-                # Filtrar apenas o status pendente (se houver essa coluna no JSON)
+                # Filtrar pelo status do ERP se existir
                 if 'STATUS_ATENDIMENTO' in df_api.columns:
                     df_api_pend = df_api[df_api['STATUS_ATENDIMENTO'] == 'Pendente'].copy()
                 else:
                     df_api_pend = df_api.copy()
 
-                # Identificar IDs que já existem na planilha
+                # Identificar IDs já presentes na planilha
                 pedidos_existentes = set(df_ped['id'].astype(str).unique()) if not df_ped.empty and 'id' in df_ped.columns else set()
                 df_novos = df_api_pend[~df_api_pend['NUMEROPEDIDOVENDA'].astype(str).isin(pedidos_existentes)]
 
                 if df_novos.empty:
-                    st.info("Todos os pedidos pendentes do ERP retornados já constam na planilha.")
-                    st.write("📋 **Todos os pedidos encontrados na API:**")
-                    st.dataframe(df_api, use_container_width=True)
+                    st.info("Todos os pedidos pendentes consultados do ERP já constam na planilha.")
+                    st.write("📋 **Prévia dos registros retornados pela API:**")
+                    cols_preview = [c for c in ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO'] if c in df_api.columns]
+                    st.dataframe(df_api[cols_preview], use_container_width=True)
                 else:
                     st.success(f"Encontrados **{len(df_novos)}** novos itens de pedidos prontos para importação!")
-                    st.dataframe(df_novos, use_container_width=True)
+                    cols_show = [c for c in ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO'] if c in df_novos.columns]
+                    st.dataframe(df_novos[cols_show], use_container_width=True)
 
                     if st.button("💾 Importar Novos Pedidos para a Planilha", type="primary"):
                         novas_linhas = []
                         for _, row in df_novos.iterrows():
                             ped_id = row['NUMEROPEDIDOVENDA']
                             
-                            # Formatação com a UF vinda do JOIN
-                            uf = row.get('UF', 'RJ')
-                            cliente_formatado = f"{row['NOME_CLIENTE']} ({uf})" if uf else f"{row['NOME_CLIENTE']}"
+                            uf = str(row.get('UF', '')).strip()
+                            uf_str = f" ({uf})" if uf and uf != 'None' and uf != 'nan' else ""
+                            cliente_formatado = f"{row['NOME_CLIENTE']}{uf_str}"
                             
                             prod_nome = row['PRODUTO']
                             qtd = int(row['QTDE'])
@@ -182,7 +184,7 @@ def tela_cadastro(user):
 
                         aba_pedidos.append_rows(novas_linhas)
                         registrar_log(user['usuario'], "IMPORTAÇÃO API", f"{len(novas_linhas)} itens importados")
-                        st.success(f"{len(novas_linhas)} itens inseridos na planilha com sucesso!")
+                        st.success(f"{len(novas_linhas)} itens inseridos com sucesso!")
                         st.rerun()
 
     with tab_lançar:
