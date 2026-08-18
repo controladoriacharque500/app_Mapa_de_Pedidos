@@ -425,7 +425,7 @@ def tela_pedidos(user):
     
     if selecao.selection.rows:
         df_sel = df_filtrado.iloc[selecao.selection.rows]
-        matriz = df_sel.pivot_table(index=['id', 'cliente'], columns='produto', values='caixas', aggfunc='sum', fill_value=0)
+        matriz = df_sel.pivot_table(index='cliente', columns='produto', values='caixas', aggfunc='sum', fill_value=0)
         matriz['TOTAL CX'] = matriz.sum(axis=1)
         totais_cx = matriz.sum().to_frame().T
         totais_cx.index = ['TOTAL CAIXAS']
