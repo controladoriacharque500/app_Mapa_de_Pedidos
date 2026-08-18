@@ -123,8 +123,16 @@ def tela_produtos(user):
 
 def tela_cadastro(user):
     st.header("📝 Gestão de Pedidos")
-    gc = get_gc(); sh = gc.open(PLANILHA_NOME)
-    aba_pedidos = sh.worksheet("pedidos"); aba_produtos = sh.worksheet("produtos")
+    gc = get_gc()
+    if not gc:
+        st.error("Erro ao conectar com o Google Sheets.")
+        return
+        
+    sh = gc.open(PLANILHA_NOME)
+    aba_pedidos = sh.worksheet("pedidos")
+    aba_produtos = sh.worksheet("produtos")
+    
+    # Atualiza a leitura das planilhas
     df_ped = pd.DataFrame(aba_pedidos.get_all_records())
     df_prod = pd.DataFrame(aba_produtos.get_all_records())
 
@@ -135,80 +143,91 @@ def tela_cadastro(user):
         api_url = st.secrets.get("API_URL", "https://surpass-entwine-sasquatch.ngrok-free.dev")
         data_filtro = st.date_input("Buscar pedidos a partir de:", value=pd.to_datetime('2026-01-01'))
 
+        # 1. BOTÃO DE BUSCAR
         if st.button("🔎 Buscar Pedidos Pendentes no ERP", use_container_width=True):
-            df_api = buscar_pedidos_api(api_url, data_inicio=data_filtro.strftime('%Y-%m-%d'))
+            with st.spinner("Consultando ERP..."):
+                df_api = buscar_pedidos_api(api_url, data_inicio=data_filtro.strftime('%Y-%m-%d'))
             
             if df_api.empty:
                 st.warning("Nenhum pedido encontrado na API para este período.")
+                st.session_state['df_novos_importar'] = pd.DataFrame()
             else:
-                # 1. Filtrar apenas STATUS_ATENDIMENTO == 'Pendente'
+                # Filtrar apenas Pendentes
                 if 'STATUS_ATENDIMENTO' in df_api.columns:
                     df_api_pend = df_api[df_api['STATUS_ATENDIMENTO'] == 'Pendente'].copy()
                 else:
                     df_api_pend = df_api.copy()
 
-                # 2. Ler novamente a planilha atual para evitar estado defasado
-                dados_planilha = aba_pedidos.get_all_records()
-                df_ped_atual = pd.DataFrame(dados_planilha)
+                # Pega os IDs já existentes na planilha (trata colunas/planilha vazia)
+                pedidos_existentes = set()
+                if not df_ped.empty and 'id' in df_ped.columns:
+                    pedidos_existentes = set(df_ped['id'].astype(str).str.strip().unique())
 
-                # 3. Obter IDs já gravados (tratando caso da planilha estar vazia)
-                if not df_ped_atual.empty and 'id' in df_ped_atual.columns:
-                    pedidos_existentes = set(df_ped_atual['id'].astype(str).str.strip().unique())
-                else:
-                    pedidos_existentes = set()
-
-                # 4. Filtrar novos pedidos que ainda não estão na planilha
+                # Filtra o que ainda NÃO está na planilha
                 df_novos = df_api_pend[~df_api_pend['NUMEROPEDIDOVENDA'].astype(str).str.strip().isin(pedidos_existentes)]
 
-                if df_novos.empty:
-                    st.info("Todos os pedidos pendentes consultados do ERP já constam na planilha.")
-                    st.write("📋 **Prévia dos registros retornados pela API:**")
-                    cols_preview = [c for c in ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO'] if c in df_api.columns]
-                    st.dataframe(df_api[cols_preview], use_container_width=True)
-                else:
-                    st.success(f"Encontrados **{len(df_novos)}** novos itens de pedidos prontos para importação!")
-                    cols_show = [c for c in ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO'] if c in df_novos.columns]
-                    st.dataframe(df_novos[cols_show], use_container_width=True)
+                # Salva no session_state para manter ativo no clique do próximo botão
+                st.session_state['df_novos_importar'] = df_novos
+                st.session_state['df_api_full_preview'] = df_api
 
-                    # Armazena os novos dados no session_state para garantir persistência ao clicar no botão
-                    st.session_state['df_novos_importar'] = df_novos
+        # 2. EXIBIÇÃO DOS RESULTADOS E BOTÃO DE GRAVAÇÃO (Fora do bloco do clique da busca)
+        if 'df_novos_importar' in st.session_state:
+            df_novos = st.session_state['df_novos_importar']
+            
+            if df_novos.empty:
+                st.info("Todos os pedidos pendentes consultados do ERP já constam na planilha.")
+                if 'df_api_full_preview' in st.session_state and not st.session_state['df_api_full_preview'].empty:
+                    st.write("📋 **Prévia de todos os registros retornados pela API:**")
+                    cols_preview = [c for c in ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO'] if c in st.session_state['df_api_full_preview'].columns]
+                    st.dataframe(st.session_state['df_api_full_preview'][cols_preview], use_container_width=True)
+            else:
+                st.success(f"Encontrados **{len(df_novos)}** novos itens pendentes prontos para importação!")
+                cols_show = [c for c in ['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'UF', 'PRODUTO', 'QTDE', 'STATUS_ATENDIMENTO'] if c in df_novos.columns]
+                st.dataframe(df_novos[cols_show], use_container_width=True)
 
-        # Botão de gravação fora do bloco 'if do clique' para não perder estado
-        if 'df_novos_importar' in st.session_state and not st.session_state['df_novos_importar'].empty:
-            df_para_gravar = st.session_state['df_novos_importar']
-            if st.button("💾 Gravador: Salvar Novos Pedidos na Planilha", type="primary", use_container_width=True):
-                novas_linhas = []
-                for _, row in df_para_gravar.iterrows():
-                    ped_id = str(row['NUMEROPEDIDOVENDA'])
-                    
-                    uf = str(row.get('UF', '')).strip()
-                    uf_str = f" ({uf})" if uf and uf not in ['None', 'nan', ''] else ""
-                    cliente_formatado = f"{row['NOME_CLIENTE']}{uf_str}"
-                    
-                    prod_nome = row['PRODUTO']
-                    qtd = int(row['QTDE'])
-                    
-                    # Busca peso unitário se a tabela produtos existir
-                    peso_unit = 0.0
-                    if not df_prod.empty and 'descricao' in df_prod.columns:
-                        match_prod = df_prod[df_prod['descricao'].str.upper() == str(prod_nome).upper()]
-                        if not match_prod.empty:
-                            peso_unit = float(match_prod.iloc[0].get('peso_unitario', 0.0))
-                    
-                    peso_total = round(qtd * peso_unit, 2)
-                    
-                    # Garante conversão de tipos nativos do Python para gravação via JSON no gspread
-                    novas_linhas.append([int(ped_id) if ped_id.isdigit() else ped_id, cliente_formatado, str(prod_nome), qtd, peso_total, "pendente"])
+                # BOTÃO QUE EFETIVAMENTE GRAVA NA PLANILHA
+                if st.button("💾 Gravador: Salvar Novos Pedidos na Planilha", type="primary", use_container_width=True):
+                    with st.spinner("Gravando dados no Google Sheets..."):
+                        novas_linhas = []
+                        for _, row in df_novos.iterrows():
+                            ped_id = int(row['NUMEROPEDIDOVENDA']) if str(row['NUMEROPEDIDOVENDA']).isdigit() else str(row['NUMEROPEDIDOVENDA'])
+                            
+                            uf = str(row.get('UF', '')).strip()
+                            uf_str = f" ({uf})" if uf and uf not in ['None', 'nan', ''] else ""
+                            cliente_formatado = f"{row['NOME_CLIENTE']}{uf_str}"
+                            
+                            prod_nome = str(row['PRODUTO'])
+                            qtd = int(float(row['QTDE']))
+                            
+                            # Busca peso unitário na aba de produtos
+                            peso_unit = 0.0
+                            if not df_prod.empty and 'descricao' in df_prod.columns:
+                                match_prod = df_prod[df_prod['descricao'].str.upper() == prod_nome.upper()]
+                                if not match_prod.empty:
+                                    peso_unit = float(match_prod.iloc[0].get('peso_unitario', 0.0))
+                            
+                            peso_total = round(qtd * peso_unit, 2)
+                            
+                            # Formato da linha: [id, cliente, produto, caixas, peso, status]
+                            novas_linhas.append([ped_id, cliente_formatado, prod_nome, qtd, peso_total, "pendente"])
 
-                aba_pedidos.append_rows(novas_linhas)
-                registrar_log(user['usuario'], "IMPORTAÇÃO API", f"{len(novas_linhas)} itens importados")
-                
-                del st.session_state['df_novos_importar']
-                st.success(f"{len(novas_linhas)} itens inseridos com sucesso na planilha!")
-                st.rerun()
+                        try:
+                            # Grava as linhas na aba de pedidos
+                            aba_pedidos.append_rows(novas_linhas)
+                            registrar_log(user['usuario'], "IMPORTAÇÃO API", f"{len(novas_linhas)} itens importados")
+                            
+                            # Limpa os estados e recarrega
+                            del st.session_state['df_novos_importar']
+                            if 'df_api_full_preview' in st.session_state:
+                                del st.session_state['df_api_full_preview']
+                                
+                            st.success(f"✅ {len(novas_linhas)} itens gravados com sucesso na planilha!")
+                            st.rerun()
+                        except Exception as err:
+                            st.error(f"Erro ao gravar na planilha: {err}")
 
     with tab_lançar:
-        proximo_id = int(pd.to_numeric(df_ped['id']).max()) + 1 if not df_ped.empty and 'id' in df_ped.columns else 1
+        proximo_id = int(pd.to_numeric(df_ped['id']).max()) + 1 if not df_ped.empty and 'id' in df_ped.columns and pd.to_numeric(df_ped['id'], errors='coerce').notna().any() else 1
         with st.container(border=True):
             st.subheader(f"Novo Pedido: #{proximo_id}")
             c1, c2 = st.columns(2)
@@ -225,7 +244,7 @@ def tela_cadastro(user):
                     peso_f = col_b.number_input("Peso Real", min_value=0.1)
                 if st.button("Confirmar Lançamento"):
                     if cliente:
-                        aba_pedidos.append_row([proximo_id, f"{cliente} ({uf})", prod_sel, qtd, peso_f, "pendente"])
+                        aba_pedidos.append_row([proximo_id, f"{cliente} ({uf})", prod_sel, int(qtd), float(peso_f), "pendente"])
                         registrar_log(user['usuario'], "CADASTRO", f"ID {proximo_id}")
                         st.success("Lançado!"); st.rerun()
 
@@ -246,9 +265,9 @@ def tela_cadastro(user):
                     for i, r in enumerate(data):
                         if str(r[0]) == str(ped_sel['id']):
                             aba_pedidos.update_cell(i+1, 2, ed_cli)
-                            aba_pedidos.update_cell(i+1, 4, ed_qtd)
-                            p_u = float(ped_sel['peso']) / int(ped_sel['caixas'])
-                            aba_pedidos.update_cell(i+1, 5, ed_qtd * p_u)
+                            aba_pedidos.update_cell(i+1, 4, int(ed_qtd))
+                            p_u = float(ped_sel['peso']) / int(ped_sel['caixas']) if int(ped_sel['caixas']) > 0 else 0
+                            aba_pedidos.update_cell(i+1, 5, float(ed_qtd * p_u))
                     st.success("Editado com sucesso!"); st.rerun()
                 
                 if c_del.form_submit_button("🗑️ EXCLUIR PEDIDO", use_container_width=True):
