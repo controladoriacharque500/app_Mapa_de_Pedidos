@@ -493,14 +493,34 @@ def tela_gestao_rotas(user):
         
         with c2.expander("📉 Confirmar Entrega (Move para Histórico)"):
             for _, r in df_sel.iterrows():
-                qtd_s = st.number_input(f"Qtd entregue #{r['id']}", 0, int(r['caixas']), int(r['caixas']), key=f"rot_{r['id']}")
-                if st.button(f"Confirmar Baixa {r['id']}"):
+                st.markdown(f"**Item ID {r['id']} - {r['produto']} ({r['cliente']})**")
+                
+                # Input da quantidade entregue
+                qtd_s = st.number_input(
+                    f"Qtd entregue #{r['id']}", 
+                    min_value=0, 
+                    max_value=int(r['caixas']), 
+                    value=int(r['caixas']), 
+                    key=f"rot_{r['id']}"
+                )
+                
+                sobra = int(r['caixas']) - qtd_s
+                num_pedido_antigo = str(r.get('NUMEROPEDIDOVENDA', '')).strip()
+
+                # Se houver sobra (Baixa Parcial), solicita o novo número do pedido ERP
+                novo_num_pedido = num_pedido_antigo
+                if sobra > 0:
+                    novo_num_pedido = st.text_input(
+                        f"⚠️ Novo nº do Pedido ERP para a Sobra (#{r['id']}):",
+                        value=num_pedido_antigo,
+                        key=f"novo_num_{r['id']}",
+                        help="Altere este campo caso o ERP tenha gerado um novo número para o saldo remanescente."
+                    ).strip()
+
+                if st.button(f"Confirmar Baixa {r['id']}", key=f"btn_baixa_{r['id']}"):
                     peso_u = float(r['peso']) / int(r['caixas']) if int(r['caixas']) > 0 else 0
                     
-                    # Trata o número do pedido garantindo string tratada
-                    num_pedido = str(r.get('NUMEROPEDIDOVENDA', '')).strip()
-
-                    # 1. Grava no HISTÓRICO (8 Colunas: id, cliente, produto, caixas, peso, status, data, NUMEROPEDIDOVENDA)
+                    # 1. Grava a quantidade ENTREGUE no HISTÓRICO com o número do pedido ORIGINAL
                     sh_hist.append_row([
                         r['id'], 
                         r['cliente'], 
@@ -509,11 +529,10 @@ def tela_gestao_rotas(user):
                         round(qtd_s * peso_u, 2), 
                         "entregue", 
                         datetime.now().strftime("%d/%m/%Y"),
-                        num_pedido
+                        num_pedido_antigo
                     ], value_input_option='USER_ENTERED')
                     
-                    # 2. Se houver SOBRA, devolve para a aba PEDIDOS mantendo o NUMEROPEDIDOVENDA
-                    sobra = int(r['caixas']) - qtd_s
+                    # 2. Se houver SOBRA, devolve para PEDIDOS com o NOVO número informado
                     if sobra > 0:
                         sh_pedidos.append_row([
                             r['id'], 
@@ -522,18 +541,24 @@ def tela_gestao_rotas(user):
                             sobra, 
                             round(sobra * peso_u, 2), 
                             "pendente",
-                            num_pedido
+                            novo_num_pedido
                         ], value_input_option='USER_ENTERED')
                     
-                    # 3. Remove a linha original em rota da aba PEDIDOS
+                    # 3. Remove a linha original "em rota" da aba PEDIDOS
                     data_ped = sh_pedidos.get_all_values()
                     for i, lin in enumerate(data_ped):
                         if len(lin) > 0 and str(lin[0]) == str(r['id']) and len(lin) >= 6 and lin[5] == "em rota":
                             sh_pedidos.delete_rows(i + 1)
                             break
 
-                    registrar_log(user['usuario'], "BAIXA", f"Baixa do pedido ID {r['id']} (Pedido ERP: {num_pedido})")
+                    log_msg = f"Baixa ID {r['id']} (Entregue: {qtd_s} cx no Pedido {num_pedido_antigo})"
+                    if sobra > 0:
+                        log_msg += f" | Sobra: {sobra} cx no Novo Pedido {novo_num_pedido}"
+                    
+                    registrar_log(user['usuario'], "BAIXA_PARCIAL" if sobra > 0 else "BAIXA_TOTAL", log_msg)
+                    st.success("Baixa realizada com sucesso!")
                     st.rerun()
+                st.divider()
 
 # --- MAIN ---
 st.set_page_config(page_title="Sistema de Carga", layout="wide")
