@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import gspread
 from fpdf import FPDF
+import requests
 import io
 
 # --- CONFIGURAÇÕES INICIAIS ---
@@ -42,6 +43,18 @@ def login_usuario(usuario, senha):
         user_match = df_users[(df_users['usuario'] == usuario) & (df_users['senha'].astype(str) == str(senha))]
         return user_match.iloc[0].to_dict() if not user_match.empty else None
     return None
+
+def buscar_pedidos_api(api_url, data_inicio='2026-01-01'):
+    try:
+        headers = {"ngrok-skip-browser-warning": "69420"}
+        url = f"{api_url}/pedidos?data_inicio={data_inicio}"
+        res = requests.get(url, headers=headers, timeout=30)
+        if res.status_code == 200:
+            return pd.DataFrame(res.json())
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Erro ao conectar na API: {e}")
+        return pd.DataFrame()
 
 def gerar_pdf_rota(df_matriz):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
@@ -115,16 +128,60 @@ def tela_cadastro(user):
     df_ped = pd.DataFrame(aba_pedidos.get_all_records())
     df_prod = pd.DataFrame(aba_produtos.get_all_records())
 
-    tab_lançar, tab_editar = st.tabs(["🚀 Novo Lançamento", "✏️ Editar / Excluir Pendentes"])
+    tab_api, tab_lançar, tab_editar = st.tabs(["🔄 Importar da API (ERP)", "🚀 Novo Lançamento Manual", "✏️ Editar / Excluir Pendentes"])
+
+    # --- NOVA ABA: IMPORTAÇÃO DA API ---
+    with tab_api:
+        st.subheader("Sincronizar Pedidos do ERP")
+        api_url = st.secrets.get("API_URL", "http://192.168.0.200:8000")
+        data_filtro = st.date_input("Buscar pedidos a partir de:", value=pd.to_datetime('2026-01-01'))
+
+        if st.button("🔎 Buscar Pedidos Pendentes no ERP", use_container_width=True):
+            df_api = buscar_pedidos_api(api_url, data_inicio=data_filtro.strftime('%Y-%m-%d'))
+            
+            if df_api.empty:
+                st.warning("Nenhum pedido encontrado na API para este período.")
+            else:
+                df_api_pend = df_api[df_api['STATUS_ATENDIMENTO'] == 'Pendente'].copy()
+                pedidos_existentes = set(df_ped['id'].astype(str).unique()) if not df_ped.empty and 'id' in df_ped.columns else set()
+                df_novos = df_api_pend[~df_api_pend['NUMEROPEDIDOVENDA'].astype(str).isin(pedidos_existentes)]
+
+                if df_novos.empty:
+                    st.info("Todos os pedidos pendentes do ERP já foram importados para a planilha!")
+                else:
+                    st.write(f"Encontrados **{len(df_novos)}** novos itens de pedidos para importar:")
+                    st.dataframe(df_novos[['NUMEROPEDIDOVENDA', 'NOME_CLIENTE', 'PRODUTO', 'QTDE']], use_container_width=True)
+
+                    if st.button("💾 Importar Selecionados para a Planilha", type="primary"):
+                        novas_linhas = []
+                        for _, row in df_novos.iterrows():
+                            ped_id = row['NUMEROPEDIDOVENDA']
+                            cliente_formatado = f"{row['NOME_CLIENTE']}"
+                            prod_nome = row['PRODUTO']
+                            qtd = int(row['QTDE'])
+                            
+                            peso_unit = 0.0
+                            if not df_prod.empty and 'descricao' in df_prod.columns:
+                                match_prod = df_prod[df_prod['descricao'].str.upper() == str(prod_nome).upper()]
+                                if not match_prod.empty:
+                                    peso_unit = float(match_prod.iloc[0].get('peso_unitario', 0.0))
+                            
+                            peso_total = round(qtd * peso_unit, 2)
+                            novas_linhas.append([ped_id, cliente_formatado, prod_nome, qtd, peso_total, "pendente"])
+
+                        aba_pedidos.append_rows(novas_linhas)
+                        registrar_log(user['usuario'], "IMPORTAÇÃO API", f"{len(novas_linhas)} itens importados")
+                        st.success(f"{len(novas_linhas)} itens importados com sucesso!")
+                        st.rerun()
 
     with tab_lançar:
-        proximo_id = int(pd.to_numeric(df_ped['id']).max()) + 1 if not df_ped.empty else 1
+        proximo_id = int(pd.to_numeric(df_ped['id']).max()) + 1 if not df_ped.empty and 'id' in df_ped.columns else 1
         with st.container(border=True):
             st.subheader(f"Novo Pedido: #{proximo_id}")
             c1, c2 = st.columns(2)
             cliente = c1.text_input("Cliente")
             uf = c2.selectbox("Estado", ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"])
-            prod_sel = st.selectbox("Produto", [""] + df_prod['descricao'].tolist())
+            prod_sel = st.selectbox("Produto", [""] + (df_prod['descricao'].tolist() if not df_prod.empty and 'descricao' in df_prod.columns else []))
             if prod_sel:
                 dados_p = df_prod[df_prod['descricao'] == prod_sel].iloc[0]
                 col_a, col_b = st.columns(2)
@@ -140,7 +197,7 @@ def tela_cadastro(user):
                         st.success("Lançado!"); st.rerun()
 
     with tab_editar:
-        df_pend = df_ped[df_ped['status'] == 'pendente'].copy()
+        df_pend = df_ped[df_ped['status'] == 'pendente'].copy() if not df_ped.empty and 'status' in df_ped.columns else pd.DataFrame()
         if df_pend.empty:
             st.info("Não há pedidos pendentes para editar.")
         else:
@@ -173,6 +230,8 @@ def tela_pedidos(user):
     st.header("🚚 Montagem de Carga")
     gc = get_gc(); sh = gc.open(PLANILHA_NOME); aba_pedidos = sh.worksheet("pedidos")
     df_p = pd.DataFrame(aba_pedidos.get_all_records())
+    if df_p.empty:
+        st.info("Sem pedidos cadastrados."); return
     df_p['caixas'] = pd.to_numeric(df_p['caixas'], errors='coerce').fillna(0)
     df_p['peso'] = pd.to_numeric(df_p['peso'], errors='coerce').fillna(0)
     df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
@@ -225,6 +284,7 @@ def tela_gestao_rotas(user):
     sh_hist = gc.open(PLANILHA_NOME).worksheet("historico")
     
     df = pd.DataFrame(sh_pedidos.get_all_records())
+    if df.empty: st.info("Nada em rota."); return
     df_rota = df[df['status'] == 'em rota'].copy()
     
     if df_rota.empty: st.info("Nada em rota."); return
@@ -248,19 +308,16 @@ def tela_gestao_rotas(user):
                 qtd_s = st.number_input(f"Qtd entregue #{r['id']}", 0, int(r['caixas']), int(r['caixas']), key=f"rot_{r['id']}")
                 if st.button(f"Confirmar Baixa {r['id']}"):
                     peso_u = float(r['peso']) / int(r['caixas'])
-                    # 1. Adiciona ao Histórico
                     sh_hist.append_row([
                         r['id'], r['cliente'], r['produto'], qtd_s, 
                         round(qtd_s * peso_u, 2), "entregue", 
                         datetime.now().strftime("%d/%m/%Y")
                     ])
                     
-                    # 2. Se sobrou algo, cria novo pedido pendente
                     sobra = int(r['caixas']) - qtd_s
                     if sobra > 0:
                         sh_pedidos.append_row([r['id'], r['cliente'], r['produto'], sobra, round(sobra * peso_u, 2), "pendente"])
                     
-                    # 3. Remove da aba Pedidos (o original que estava em rota)
                     data_ped = sh_pedidos.get_all_values()
                     for i, lin in enumerate(data_ped):
                         if str(lin[0]) == str(r['id']) and lin[5] == "em rota":
