@@ -9,7 +9,7 @@ import io
 # --- CONFIGURAÇÕES INICIAIS ---
 PLANILHA_NOME = "Mapa_de_Pedidos" 
 CREDENTIALS_PATH = "credentials.json"
-NOME_ABREVIAR = "FORTE RIO COMERCIO E DISTRIBUICAO LTDA"
+NOME_ABREVIAR = "FORTE RIO"
 
 def get_gc():
     try:
@@ -250,7 +250,7 @@ def processar_dados_api_para_pedidos(user):
                 caixas = 1 if (0 < qtde_peso <= peso_unit_seguro) else int(round(qtde_peso / peso_unit_seguro))
 
             nome_cli = str(row.get('NOME_CLIENTE', '')).strip()
-            if nome_cli == NOME_ABREVIAR:
+            if nome_cli == "FORTE RIO COMERCIO E DISTRIBUICAO LTDA":
                 nome_cli = NOME_ABREVIAR
             else:
                 nome_cli = nome_cli
