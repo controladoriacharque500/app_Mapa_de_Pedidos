@@ -74,55 +74,50 @@ def limpar_e_converter_float(valor, padrao=0.0):
     except ValueError:
         return float(padrao)
 
-# --- GERADOR DE PDF COM CÓDIGO DO PRODUTO ACIMA DA DESCRIÇÃO ---
-def gerar_pdf_rota(df_matriz, mapa_codigos=None):
-    if mapa_codigos is None:
-        mapa_codigos = {}
+def gerar_pdf_rota(df_matriz, dict_codigos=None):
+    if dict_codigos is None:
+        dict_codigos = {}
 
     pdf = FPDF(orientation='L', unit='mm', format='A4')
-    pdf.set_auto_page_break(auto=True, margin=10)
     pdf.add_page()
-    
     pdf.set_font("Arial", "B", 14)
-    pdf.cell(0, 8, f"MAPA DE CARREGAMENTO - {datetime.now().strftime('%d/%m/%Y')}", ln=True, align='C')
-    pdf.ln(4)
+    pdf.cell(0, 10, f"MAPA DE CARREGAMENTO - {datetime.now().strftime('%d/%m/%Y')}", ln=True, align='C')
+    pdf.ln(3)
     
+    pdf.set_font("Arial", "B", 6)
     cols = df_matriz.columns.tolist()
-    if "TOTAL CX" in cols:
-        cols.remove("TOTAL CX")
-        cols.append("TOTAL CX")
-        
-    num_cols = len(cols)
-    col_width = 227 / num_cols if num_cols > 0 else 30
+    col_width = 240 / (len(cols) + 1)
     
-    # Cabeçalho da Tabela
-    pdf.set_font("Arial", "B", 7)
-    
-    # Célula 'Cliente'
-    x_start = pdf.get_x()
-    y_start = pdf.get_y()
+    # Cabeçalho do Cliente
     pdf.cell(50, 10, "Cliente", 1, 0, 'C')
     
-    # Imprime os Produtos com Código acima da Descrição Abreviada
-    for col in cols:
-        x_curr = pdf.get_x()
-        y_curr = pdf.get_y()
-        
-        cod = str(mapa_codigos.get(col, '')).strip()
-        
-        # Formata o texto da coluna
-        if cod:
-            texto_cabecalho = f"[{cod}]\n{str(col)[:12]}"
-        else:
-            texto_cabecalho = f"\n{str(col)[:12]}"
-            
-        pdf.multi_cell(col_width, 5, texto_cabecalho, border=1, align='C')
-        pdf.set_xy(x_curr + col_width, y_curr)
-        
-    pdf.ln(10)
+    # Cabeçalho dos Produtos (Com Código acima da Descrição)
+    x_start = pdf.get_x()
+    y_start = pdf.get_y()
     
-    # Linhas de Dados
-    pdf.set_font("Arial", "", 7)
+    for i, col in enumerate(cols):
+        cod_prod = str(dict_codigos.get(col, '')).strip()
+        cod_prod_fmt = f"[{cod_prod}]" if cod_prod else ""
+        
+        # Desenha a célula com duas linhas: Código e Descrição
+        x = x_start + (i * col_width)
+        pdf.set_xy(x, y_start)
+        
+        # Caixa do cabeçalho
+        pdf.rect(x, y_start, col_width, 10)
+        
+        # Linha 1: Código
+        pdf.set_font("Arial", "B", 6)
+        pdf.cell(col_width, 4, cod_prod_fmt, 0, 2, 'C')
+        
+        # Linha 2: Descrição
+        pdf.set_font("Arial", "", 5.5)
+        pdf.cell(col_width, 5, str(col)[:12], 0, 0, 'C')
+
+    pdf.set_xy(50, y_start + 10)
+    pdf.ln(0)
+    
+    # Corpo da Tabela
     for index, row in df_matriz.iterrows():
         label = str(index[1]) if isinstance(index, tuple) else str(index)
         is_total_row = index in ['TOTAL CAIXAS', 'TOTAL PESO (kg)']
@@ -131,23 +126,25 @@ def gerar_pdf_rota(df_matriz, mapa_codigos=None):
             pdf.set_fill_color(230, 230, 230)
             pdf.set_font("Arial", "B", 7)
         else:
-            pdf.set_font("Arial", "", 7)
+            pdf.set_fill_color(255, 255, 255)
+            pdf.set_font("Arial", "", 6.5)
             
-        pdf.cell(50, 6, label[:32], 1, 0, 'L', is_total_row)
+        pdf.cell(50, 5, label[:32], 1, 0, 'L', is_total_row)
         
         for col in cols:
-            val = row.get(col, 0)
+            val = row[col]
             if not is_total_row and (pd.isna(val) or val == 0):
                 txt = ""
             else:
                 txt = f"{val:.2f}" if "PESO" in str(index) else str(int(val))
                 
-            pdf.cell(col_width, 6, txt, 1, 0, 'C', is_total_row)
+            pdf.cell(col_width, 5, txt, 1, 0, 'C', is_total_row)
         pdf.ln()
         
     return bytes(pdf.output())
 
 # --- FUNÇÃO DE PROCESSAMENTO COM TRAVA DE SEGURANÇA PARA CLIENTES ---
+
 def processar_dados_api_para_pedidos(user):
     gc = get_gc()
     if not gc:
@@ -179,7 +176,7 @@ def processar_dados_api_para_pedidos(user):
             if nome_sis and nome_abrev:
                 de_para_cli[nome_sis] = nome_abrev
 
-    # TRAVA DE SEGURANÇA DE CLIENTES
+    # Trava de Clientes
     clientes_na_api = set(df_api['NOME_CLIENTE'].astype(str).str.strip().unique()) if 'NOME_CLIENTE' in df_api.columns else set()
     clientes_na_api.discard("")
 
@@ -238,7 +235,7 @@ def processar_dados_api_para_pedidos(user):
             continue
 
         if prod_erp in de_para_map:
-            desc_abrev, peso_unit, tipo_peso, cod_prod = de_para_map[prod_erp]
+            desc_abrev, peso_unit, tipo_peso, _ = de_para_map[prod_erp]
             peso_unit_seguro = peso_unit if (peso_unit and peso_unit > 0) else 1.0
 
             qtde_raw = str(row.get('QTDE', 0)).strip()
@@ -303,188 +300,6 @@ def processar_dados_api_para_pedidos(user):
 
 # --- TELAS DO SISTEMA ---
 
-def tela_produtos(user):
-    st.header("📦 Cadastro de Produtos e De-Para ERP")
-    gc = get_gc()
-    if not gc:
-        st.error("Erro de conexão.")
-        return
-    sh = gc.open(PLANILHA_NOME)
-    aba_prod = sh.worksheet("produtos")
-    
-    with st.expander("➕ Novo Produto", expanded=True):
-        with st.form("form_prod"):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                desc = st.text_input("Descrição (Abreviada)")
-                desc_sis = st.text_input("Descrição Sistema/ERP (Opcional)")
-            with col_b:
-                cod_prod = st.text_input("Código do Produto")
-                p_unit = st.number_input("Peso Unitário", min_value=0.0, step=0.01)
-                
-            tipo = st.selectbox("Tipo de Peso", ["padrão", "variável"])
-            
-            if st.form_submit_button("Cadastrar Produto"):
-                # Salva na ordem: descricao, peso_unitario, tipo, descricao_sistema, codigo
-                aba_prod.append_row([desc.strip(), p_unit, tipo, desc_sis.strip(), cod_prod.strip()], value_input_option='USER_ENTERED')
-                registrar_log(user['usuario'], "PRODUTO", f"Cadastrado produto {desc} (Cód: {cod_prod})")
-                st.success("Produto cadastrado com sucesso!")
-                st.rerun()
-
-    with st.expander("🔗 Vincular Produtos Pendentes do ERP (De-Para)"):
-        try:
-            aba_dados_api = sh.worksheet("Dados_api")
-            df_api = pd.DataFrame(aba_dados_api.get_all_records()).fillna("")
-            df_prod = pd.DataFrame(aba_prod.get_all_records()).fillna("")
-
-            if 'descricao_sistema' not in df_prod.columns:
-                df_prod['descricao_sistema'] = ""
-
-            if not df_api.empty and 'PRODUTO' in df_api.columns:
-                prods_api_unicos = [str(p).strip() for p in df_api['PRODUTO'].dropna().unique() if str(p).strip() != ""]
-                prods_ja_vinculados = [str(p).strip() for p in df_prod['descricao_sistema'].dropna().unique() if str(p).strip() != ""]
-                prods_pendentes = [p for p in prods_api_unicos if p not in prods_ja_vinculados]
-
-                if not prods_pendentes:
-                    st.success("🎉 Todos os produtos da aba Dados_api já possuem vínculo cadastrado!")
-                    if st.button("🚀 Processar Pedidos Pendentes Agora", type="primary", use_container_width=True):
-                        qtd, msg, ok = processar_dados_api_para_pedidos(user)
-                        if ok:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                else:
-                    st.info(f"Existem **{len(prods_pendentes)}** produtos da API sem vínculo com o cadastro local.")
-                    
-                    with st.form("form_depara"):
-                        prod_erp_sel = st.selectbox("1. Selecione o Produto vindo do ERP (Dados_api):", options=prods_pendentes)
-                        prods_locais = df_prod['descricao'].tolist() if 'descricao' in df_prod.columns else []
-                        prod_local_sel = st.selectbox("2. Vincule ao Produto Local equivalente (Abreviado):", options=prods_locais)
-
-                        if st.form_submit_button("💾 Salvar Vínculo De-Para e Processar Pedidos"):
-                            if prod_erp_sel and prod_local_sel:
-                                celula = aba_prod.find(prod_local_sel)
-                                if celula:
-                                    aba_prod.update_cell(celula.row, 4, prod_erp_sel)
-                                    registrar_log(user['usuario'], "DE_PARA", f"Vinculado '{prod_erp_sel}' -> '{prod_local_sel}'")
-                                    
-                                    qtd_proc, msg_proc, ok_proc = processar_dados_api_para_pedidos(user)
-                                    if ok_proc:
-                                        st.success(f"✅ Vínculo salvo! {msg_proc}")
-                                        st.rerun()
-                                    else:
-                                        st.error(msg_proc)
-                                else:
-                                    st.error("Produto local não encontrado na planilha.")
-                            else:
-                                st.warning("Selecione ambos os produtos para salvar.")
-            else:
-                st.info("Nenhum dado pendente encontrado na aba 'Dados_api'.")
-        except Exception as e:
-            st.error(f"Erro ao carregar dados para o De-Para: {e}")
-
-    st.subheader("📋 Produtos Cadastrados")
-    try:
-        dados_prod = aba_prod.get_all_records()
-        df_exibir = pd.DataFrame(dados_prod).fillna("")
-        st.dataframe(df_exibir, use_container_width=True)
-    except Exception as e:
-        st.error(f"Erro ao listar produtos: {e}")
-
-def tela_pedidos(user):
-    st.header("🚚 Montagem de Carga")
-    gc = get_gc()
-    if not gc:
-        st.error("Erro de conexão.")
-        return
-        
-    sh = gc.open(PLANILHA_NOME)
-    aba_pedidos = sh.worksheet("pedidos")
-    aba_prod = sh.worksheet("produtos")
-    
-    df_p = pd.DataFrame(aba_pedidos.get_all_records())
-    df_prod = pd.DataFrame(aba_prod.get_all_records()).fillna("")
-    
-    # Mapeia Código do Produto para usar no PDF
-    mapa_codigos = {}
-    if not df_prod.empty and 'descricao' in df_prod.columns and 'codigo' in df_prod.columns:
-        for _, r in df_prod.iterrows():
-            desc = str(r.get('descricao', '')).strip()
-            cod = str(r.get('codigo', '')).strip()
-            if desc:
-                mapa_codigos[desc] = cod
-
-    if df_p.empty:
-        st.info("Sem pedidos cadastrados.")
-        return
-
-    df_p['caixas'] = df_p['caixas'].apply(converter_numero_sheet)
-    df_p['peso'] = df_p['peso'].apply(converter_numero_sheet)
-
-    df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
-
-    if df_pendentes.empty:
-        st.info("Sem pedidos pendentes.")
-        return
-
-    df_pendentes['uf_extraida'] = df_pendentes['cliente'].str.extract(r'\((.*?)\)')
-    ufs = sorted(df_pendentes['uf_extraida'].dropna().unique().tolist())
-    f_uf = st.sidebar.multiselect("Filtrar por UF", options=ufs, default=ufs)
-    df_filtrado = df_pendentes[df_pendentes['uf_extraida'].isin(f_uf)]
-
-    selecao = st.dataframe(
-        df_filtrado.drop(columns=['uf_extraida']), 
-        use_container_width=True, 
-        hide_index=True, 
-        on_select="rerun", 
-        selection_mode="multi-row"
-    )
-    
-    if selecao.selection.rows:
-        df_sel = df_filtrado.iloc[selecao.selection.rows]
-        matriz = df_sel.pivot_table(index='cliente', columns='produto', values='caixas', aggfunc='sum', fill_value=0)
-        matriz['TOTAL CX'] = matriz.sum(axis=1)
-        
-        totais_cx = matriz.sum().to_frame().T
-        totais_cx.index = ['TOTAL CAIXAS']
-        
-        peso_resumo = df_sel.groupby('produto')['peso'].sum().to_frame().T
-        peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
-        peso_resumo.index = ['TOTAL PESO (kg)']
-        
-        peso_resumo['TOTAL CX'] = round(df_sel['peso'].sum(), 3)
-        
-        df_final = pd.concat([matriz, totais_cx, peso_resumo])
-        
-        st.subheader("📊 Matriz de Carregamento")
-        st.dataframe(df_final, use_container_width=True)
-        
-        c_pdf, c_conf = st.columns(2)
-        try:
-            # Passa o mapeamento dos códigos para o PDF
-            pdf_bytes = gerar_pdf_rota(df_final, mapa_codigos)
-            c_pdf.download_button(
-                "📄 Baixar PDF do Mapa", 
-                data=pdf_bytes, 
-                file_name=f"mapa_{datetime.now().strftime('%d%m_%H%M')}.pdf", 
-                mime="application/pdf", 
-                use_container_width=True
-            )
-        except Exception as e:
-            c_pdf.error(f"Erro PDF: {e}")
-        
-        if (user['nivel'] == 'total' or user['usuario'] == 'admin') and c_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
-            ids = df_sel['id'].astype(str).tolist()
-            data = aba_pedidos.get_all_values()
-            for i, lin in enumerate(data):
-                if str(lin[0]) in ids:
-                    aba_pedidos.update_cell(i + 1, 6, "em rota")
-            registrar_log(user['usuario'], "ROTA", "Carga confirmada")
-            st.rerun()
-        elif user['nivel'] == 'visualizacao':
-            c_conf.warning("Nível 'visualizacao' não pode confirmar rota.")
-
 def tela_clientes(user):
     st.header("👤 Cadastro e Abreviação de Clientes (De-Para)")
     gc = get_gc()
@@ -497,7 +312,7 @@ def tela_clientes(user):
     try:
         aba_cli = sh.worksheet("cliente")
     except Exception:
-        st.error("Aba 'cliente' não encontrada no Google Sheets!")
+        st.error("Aba 'cliente' não encontrada!")
         return
 
     try:
@@ -595,6 +410,90 @@ def tela_usuarios(user):
                 
     st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
 
+def tela_produtos(user):
+    st.header("📦 Cadastro de Produtos e De-Para ERP")
+    gc = get_gc()
+    if not gc:
+        st.error("Erro de conexão.")
+        return
+    sh = gc.open(PLANILHA_NOME)
+    aba_prod = sh.worksheet("produtos")
+    
+    with st.expander("➕ Novo Produto"):
+        with st.form("form_prod"):
+            desc = st.text_input("Descrição (Abreviada)")
+            codigo_prod = st.text_input("Código do Produto (ERP/Local)")
+            desc_sis = st.text_input("Descrição Sistema/ERP (Opcional)")
+            p_unit = st.number_input("Peso Unitário", min_value=0.0, step=0.01)
+            tipo = st.selectbox("Tipo de Peso", ["padrão", "variável"])
+            
+            if st.form_submit_button("Cadastrar Produto"):
+                aba_prod.append_row([desc, p_unit, tipo, desc_sis, codigo_prod])
+                registrar_log(user['usuario'], "PRODUTO", f"Cadastrado produto {desc} (Cód: {codigo_prod})")
+                st.success("Cadastrado com sucesso!")
+                st.rerun()
+
+    with st.expander("🔗 Vincular Produtos Pendentes do ERP (De-Para)"):
+        try:
+            aba_dados_api = sh.worksheet("Dados_api")
+            df_api = pd.DataFrame(aba_dados_api.get_all_records()).fillna("")
+            df_prod = pd.DataFrame(aba_prod.get_all_records()).fillna("")
+
+            if 'descricao_sistema' not in df_prod.columns:
+                df_prod['descricao_sistema'] = ""
+
+            if not df_api.empty and 'PRODUTO' in df_api.columns:
+                prods_api_unicos = [str(p).strip() for p in df_api['PRODUTO'].dropna().unique() if str(p).strip() != ""]
+                prods_ja_vinculados = [str(p).strip() for p in df_prod['descricao_sistema'].dropna().unique() if str(p).strip() != ""]
+                prods_pendentes = [p for p in prods_api_unicos if p not in prods_ja_vinculados]
+
+                if not prods_pendentes:
+                    st.success("🎉 Todos os produtos da aba Dados_api já possuem vínculo cadastrado!")
+                    if st.button("🚀 Processar Pedidos Pendentes Agora", type="primary", use_container_width=True):
+                        qtd, msg, ok = processar_dados_api_para_pedidos(user)
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                else:
+                    st.info(f"Existem **{len(prods_pendentes)}** produtos da API sem vínculo com o cadastro local.")
+                    
+                    with st.form("form_depara"):
+                        prod_erp_sel = st.selectbox("1. Selecione o Produto vindo do ERP (Dados_api):", options=prods_pendentes)
+                        prods_locais = df_prod['descricao'].tolist() if 'descricao' in df_prod.columns else []
+                        prod_local_sel = st.selectbox("2. Vincule ao Produto Local equivalente (Abreviado):", options=prods_locais)
+
+                        if st.form_submit_button("💾 Salvar Vínculo De-Para e Processar Pedidos"):
+                            if prod_erp_sel and prod_local_sel:
+                                celula = aba_prod.find(prod_local_sel)
+                                if celula:
+                                    aba_prod.update_cell(celula.row, 4, prod_erp_sel)
+                                    registrar_log(user['usuario'], "DE_PARA", f"Vinculado '{prod_erp_sel}' -> '{prod_local_sel}'")
+                                    
+                                    qtd_proc, msg_proc, ok_proc = processar_dados_api_para_pedidos(user)
+                                    if ok_proc:
+                                        st.success(f"✅ Vínculo salvo! {msg_proc}")
+                                        st.rerun()
+                                    else:
+                                        st.error(msg_proc)
+                                else:
+                                    st.error("Produto local não encontrado na planilha.")
+                            else:
+                                st.warning("Selecione ambos os produtos para salvar.")
+            else:
+                st.info("Nenhum dado pendente encontrado na aba 'Dados_api'.")
+        except Exception as e:
+            st.error(f"Erro ao carregar dados para o De-Para: {e}")
+
+    st.subheader("📋 Produtos Cadastrados")
+    try:
+        dados_prod = aba_prod.get_all_records()
+        df_exibir = pd.DataFrame(dados_prod).fillna("")
+        st.dataframe(df_exibir, use_container_width=True)
+    except Exception as e:
+        st.error(f"Erro ao listar produtos: {e}")
+
 def tela_cadastro(user):
     st.header("📝 Gestão de Pedidos")
     gc = get_gc()
@@ -675,6 +574,98 @@ def converter_numero_sheet(val):
         return int(val_str)
     except ValueError:
         return 0
+
+def tela_pedidos(user):
+    st.header("🚚 Montagem de Carga")
+    gc = get_gc()
+    if not gc:
+        st.error("Erro de conexão.")
+        return
+        
+    sh = gc.open(PLANILHA_NOME)
+    aba_pedidos = sh.worksheet("pedidos")
+    aba_prod = sh.worksheet("produtos")
+    
+    df_p = pd.DataFrame(aba_pedidos.get_all_records())
+    df_prod = pd.DataFrame(aba_prod.get_all_records()).fillna("")
+    
+    # Dicionário mapeando Descrição Abreviada -> Código do Produto
+    dict_codigos_prod = {}
+    if not df_prod.empty and 'descricao' in df_prod.columns and 'codigo' in df_prod.columns:
+        for _, r in df_prod.iterrows():
+            d = str(r.get('descricao', '')).strip()
+            c = str(r.get('codigo', '')).strip()
+            if d:
+                dict_codigos_prod[d] = c
+
+    if df_p.empty:
+        st.info("Sem pedidos cadastrados.")
+        return
+
+    df_p['caixas'] = df_p['caixas'].apply(converter_numero_sheet)
+    df_p['peso'] = df_p['peso'].apply(converter_numero_sheet)
+
+    df_pendentes = df_p[df_p['status'] == 'pendente'].copy()
+
+    if df_pendentes.empty:
+        st.info("Sem pedidos pendentes.")
+        return
+
+    df_pendentes['uf_extraida'] = df_pendentes['cliente'].str.extract(r'\((.*?)\)')
+    ufs = sorted(df_pendentes['uf_extraida'].dropna().unique().tolist())
+    f_uf = st.sidebar.multiselect("Filtrar por UF", options=ufs, default=ufs)
+    df_filtrado = df_pendentes[df_pendentes['uf_extraida'].isin(f_uf)]
+
+    selecao = st.dataframe(
+        df_filtrado.drop(columns=['uf_extraida']), 
+        use_container_width=True, 
+        hide_index=True, 
+        on_select="rerun", 
+        selection_mode="multi-row"
+    )
+    
+    if selecao.selection.rows:
+        df_sel = df_filtrado.iloc[selecao.selection.rows]
+        matriz = df_sel.pivot_table(index='cliente', columns='produto', values='caixas', aggfunc='sum', fill_value=0)
+        matriz['TOTAL CX'] = matriz.sum(axis=1)
+        
+        totais_cx = matriz.sum().to_frame().T
+        totais_cx.index = ['TOTAL CAIXAS']
+        
+        peso_resumo = df_sel.groupby('produto')['peso'].sum().to_frame().T
+        peso_resumo = peso_resumo.reindex(columns=matriz.columns, fill_value=0)
+        peso_resumo.index = ['TOTAL PESO (kg)']
+        
+        peso_resumo['TOTAL CX'] = round(df_sel['peso'].sum(), 3)
+        
+        df_final = pd.concat([matriz, totais_cx, peso_resumo])
+        
+        st.subheader("📊 Matriz de Carregamento")
+        st.dataframe(df_final, use_container_width=True)
+        
+        c_pdf, c_conf = st.columns(2)
+        try:
+            pdf_bytes = gerar_pdf_rota(df_final, dict_codigos_prod)
+            c_pdf.download_button(
+                "📄 Baixar PDF do Mapa", 
+                data=pdf_bytes, 
+                file_name=f"mapa_{datetime.now().strftime('%d%m_%H%M')}.pdf", 
+                mime="application/pdf", 
+                use_container_width=True
+            )
+        except Exception as e:
+            c_pdf.error(f"Erro PDF: {e}")
+        
+        if (user['nivel'] == 'total' or user['usuario'] == 'admin') and c_conf.button("🚀 Confirmar Saída para Rota", use_container_width=True):
+            ids = df_sel['id'].astype(str).tolist()
+            data = aba_pedidos.get_all_values()
+            for i, lin in enumerate(data):
+                if str(lin[0]) in ids:
+                    aba_pedidos.update_cell(i + 1, 6, "em rota")
+            registrar_log(user['usuario'], "ROTA", "Carga confirmada")
+            st.rerun()
+        elif user['nivel'] == 'visualizacao':
+            c_conf.warning("Nível 'visualizacao' não pode confirmar rota.")
 
 def tela_gestao_rotas(user):
     st.header("🔄 Gestão de Pedidos em Rota")
