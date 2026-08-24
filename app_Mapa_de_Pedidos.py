@@ -4,12 +4,10 @@ from datetime import datetime
 import gspread
 from fpdf import FPDF
 import requests
-import io
 
 # --- CONFIGURAÇÕES INICIAIS ---
 PLANILHA_NOME = "Mapa_de_Pedidos" 
 CREDENTIALS_PATH = "credentials.json"
-
 
 def get_gc():
     try:
@@ -63,6 +61,19 @@ def buscar_pedidos_api(api_url, data_inicio='2026-01-01'):
         st.error(f"Erro ao conectar na API: {e}")
         return pd.DataFrame()
 
+def limpar_e_converter_float(valor, padrao=0.0):
+    """Trata conversões de número garantindo retorno float seguro."""
+    if pd.isna(valor) or valor == "" or valor is None:
+        return float(padrao)
+    
+    val_str = str(valor).strip()
+    if ',' in val_str:
+        val_str = val_str.replace('.', '').replace(',', '.')
+    try:
+        return float(val_str)
+    except ValueError:
+        return float(padrao)
+
 def gerar_pdf_rota(df_matriz):
     pdf = FPDF(orientation='L', unit='mm', format='A4')
     pdf.add_page()
@@ -91,9 +102,6 @@ def gerar_pdf_rota(df_matriz):
         
         for col in cols:
             val = row[col]
-            
-            # --- TRATAMENTO PARA ITENS ZERADOS NO PDF ---
-            # Se for 0 (e não for linha de total), deixa a célula em branco
             if not is_total_row and (pd.isna(val) or val == 0):
                 txt = ""
             else:
@@ -103,58 +111,10 @@ def gerar_pdf_rota(df_matriz):
         pdf.ln()
     return bytes(pdf.output())
 
-# --- MÓDULOS DE TELA ---
-
-def tela_usuarios(user):
-    st.header("👥 Gestão de Usuários e Permissões")
-    gc = get_gc()
-    if not gc:
-        st.error("Erro ao conectar ao serviço do Google Sheets.")
-        return
-    sh = gc.open(PLANILHA_NOME)
-    aba_user = sh.worksheet("usuarios")
-    
-    with st.expander("➕ Cadastrar / Editar Usuário"):
-        with st.form("form_usuario"):
-            novo_u = st.text_input("Usuário (Login)")
-            nova_s = st.text_input("Senha", type="password")
-            nivel = st.selectbox("Nível (Total libera botões de ação)", ["total", "visualizacao"])
-            m1 = st.checkbox("Cadastro", True)
-            m2 = st.checkbox("Produtos", True)
-            m3 = st.checkbox("Pedidos", True)
-            m4 = st.checkbox("Gestão de Rotas", True)
-            m5 = st.checkbox("Gestão de Usuários", False)
-            m6 = st.checkbox("Logs", True)
-            m7 = st.checkbox("Relatórios", True)
-            
-            if st.form_submit_button("Salvar"):
-                mods = [m for m, val in zip(["Cadastro", "Produtos", "Pedidos", "Gestão de Rotas", "Gestão de Usuários", "Logs", "Relatórios"], [m1, m2, m3, m4, m5, m6, m7]) if val]
-                df_u = pd.DataFrame(aba_user.get_all_records())
-                if not df_u.empty and novo_u in df_u['usuario'].values:
-                    idx = df_u[df_u['usuario'] == novo_u].index[0] + 2
-                    aba_user.delete_rows(int(idx))
-                aba_user.append_row([novo_u, nova_s, nivel, ",".join(mods)])
-                registrar_log(user['usuario'], "USUÁRIO", f"Salvo/Atualizado usuário {novo_u}")
-                st.success("Usuário salvo com sucesso!")
-                st.rerun()
-                
-    st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
-
-def limpar_e_converter_float(valor, padrao=0.0):
-    """Trata conversões de número garantindo retorno float seguro."""
-    if pd.isna(valor) or valor == "" or valor is None:
-        return float(padrao)
-    
-    val_str = str(valor).strip()
-    if ',' in val_str:
-        val_str = val_str.replace('.', '').replace(',', '.')
-    try:
-        return float(val_str)
-    except ValueError:
-        return float(padrao)
+# --- FUNÇÃO DE PROCESSAMENTO DE PEDIDOS COM DE-PARA DE CLIENTE E PRODUTO ---
 
 def processar_dados_api_para_pedidos(user):
-    """Lê a aba Dados_api, ajusta escala de peso e caixas com inteligência e grava na aba pedidos."""
+    """Lê Dados_api, aplica De-Para de Produtos e Clientes e salva em pedidos."""
     gc = get_gc()
     if not gc:
         return 0, "Erro na conexão com o Google Sheets."
@@ -164,6 +124,13 @@ def processar_dados_api_para_pedidos(user):
     aba_prod = sh.worksheet("produtos")
     aba_pedidos = sh.worksheet("pedidos")
     
+    # Leitura da aba cliente para De-Para de Nomes
+    try:
+        aba_cli = sh.worksheet("cliente")
+        df_cli = pd.DataFrame(aba_cli.get_all_records()).fillna("")
+    except Exception:
+        df_cli = pd.DataFrame()
+
     try:
         aba_hist = sh.worksheet("historico")
         df_hist = pd.DataFrame(aba_hist.get_all_records()).fillna("")
@@ -177,6 +144,16 @@ def processar_dados_api_para_pedidos(user):
     if df_api.empty:
         return 0, "Aba Dados_api está vazia."
 
+    # Map de Clientes (Nome_Sistema -> Nome_Abreviado)
+    de_para_cli = {}
+    if not df_cli.empty and 'Nome_Sistema' in df_cli.columns and 'Nome_Abreviado' in df_cli.columns:
+        for _, r in df_cli.iterrows():
+            nome_sis = str(r.get('Nome_Sistema', '')).strip()
+            nome_abrev = str(r.get('Nome_Abreviado', '')).strip()
+            if nome_sis and nome_abrev:
+                de_para_cli[nome_sis] = nome_abrev
+
+    # Map de Produtos
     de_para_map = {}
     if not df_prod.empty and 'descricao_sistema' in df_prod.columns:
         for _, r in df_prod.iterrows():
@@ -203,7 +180,6 @@ def processar_dados_api_para_pedidos(user):
 
     novas_linhas_pedidos = []
     linhas_api_para_manter = [] 
-    pedidos_duplicados_count = 0
 
     for _, row in df_api.iterrows():
         num_pedido = str(row.get('NUMEROPEDIDOVENDA', '')).strip()
@@ -213,7 +189,6 @@ def processar_dados_api_para_pedidos(user):
             continue
 
         if num_pedido in pedidos_existentes:
-            pedidos_duplicados_count += 1
             continue
 
         if prod_erp in de_para_map:
@@ -226,13 +201,12 @@ def processar_dados_api_para_pedidos(user):
             else:
                 qtde_num = limpar_e_converter_float(qtde_raw)
 
-            # --- LÓGICA INTELIGENTE DE CONVERSÃO DE PESO / CAIXAS ---
+            # Lógica de conversão
             if tipo_peso == "padrão":
-                # Se a quantidade recebida for divisível ou múltipla exata do peso unitário
                 if qtde_num >= peso_unit_seguro and (qtde_num % peso_unit_seguro == 0):
                     caixas = int(qtde_num // peso_unit_seguro)
                     qtde_peso = round(qtde_num, 3)
-                elif qtde_num > 1000:  # Ex: enviou em gramas
+                elif qtde_num > 1000:
                     qtde_peso = round(qtde_num / 1000.0, 3)
                     caixas = int(round(qtde_peso / peso_unit_seguro))
                 else:
@@ -241,20 +215,25 @@ def processar_dados_api_para_pedidos(user):
                     if caixas == 0 and qtde_peso > 0:
                         caixas = 1
             else:
-                # Produto de peso variável
                 if qtde_num > 1000 and (qtde_num % peso_unit_seguro != 0):
                     qtde_peso = round(qtde_num / 1000.0, 3)
                 else:
                     qtde_peso = round(qtde_num, 3)
-                
                 caixas = 1 if (0 < qtde_peso <= peso_unit_seguro) else int(round(qtde_peso / peso_unit_seguro))
 
-            nome_cli = str(row.get('NOME_CLIENTE', '')).strip()
+            # --- DE-PARA DE CLIENTE ---
+            nome_cli_erp = str(row.get('NOME_CLIENTE', '')).strip()
+            # Usa a versão abreviada se cadastrada na aba 'cliente', senão usa o nome do ERP
+            nome_cli_final = de_para_cli.get(nome_cli_erp, nome_cli_erp)
+
             obs_raw = row.get('OBSERVACAO', row.get('OBS', ''))
             obs_cli = str(obs_raw).strip() if pd.notna(obs_raw) and str(obs_raw).upper() != "NONE" else ""
             uf_cli = str(row.get('UF', '')).strip()
 
-            cliente_fmt = f"{nome_cli} [{obs_cli}] ({uf_cli})" if obs_cli else f"{nome_cli} ({uf_cli})"
+            if obs_cli:
+                cliente_fmt = f"{nome_cli_final} [{obs_cli}] ({uf_cli})"
+            else:
+                cliente_fmt = f"{nome_cli_final} ({uf_cli})"
             
             ultimo_id += 1
             novas_linhas_pedidos.append([
@@ -278,7 +257,120 @@ def processar_dados_api_para_pedidos(user):
         return registros_processados, f"✅ {registros_processados} item(ns) transferido(s) com sucesso!"
 
     return 0, "Nenhum pedido pendente para processamento."
-   
+
+# --- NOVAS TELAS E MÓDULOS ---
+
+def tela_clientes(user):
+    st.header("👤 Cadastro e Abreviação de Clientes (De-Para)")
+    gc = get_gc()
+    if not gc:
+        st.error("Erro ao conectar com o Google Sheets.")
+        return
+        
+    sh = gc.open(PLANILHA_NOME)
+    
+    try:
+        aba_cli = sh.worksheet("cliente")
+    except Exception:
+        st.error("Aba 'cliente' não encontrada no Google Sheets! Crie uma aba com o nome 'cliente' e os cabeçalhos: Nome_Sistema, Nome_Abreviado")
+        return
+
+    try:
+        aba_api = sh.worksheet("Dados_api")
+        df_api = pd.DataFrame(aba_api.get_all_records()).fillna("")
+    except Exception:
+        df_api = pd.DataFrame()
+
+    df_cli = pd.DataFrame(aba_cli.get_all_records()).fillna("")
+    
+    if 'Nome_Sistema' not in df_cli.columns:
+        df_cli['Nome_Sistema'] = ""
+    if 'Nome_Abreviado' not in df_cli.columns:
+        df_cli['Nome_Abreviado'] = ""
+
+    # Identifica clientes da Dados_api que ainda não estão abreviados
+    clientes_api = [str(c).strip() for c in df_api['NOME_CLIENTE'].dropna().unique() if str(c).strip() != ""] if not df_api.empty and 'NOME_CLIENTE' in df_api.columns else []
+    clientes_cadastrados = [str(c).strip() for c in df_cli['Nome_Sistema'].dropna().unique() if str(c).strip() != ""]
+    clientes_pendentes = [c for c in clientes_api if c not in clientes_cadastrados]
+
+    with st.expander("➕ Abreviar Novo Cliente vindo da API / ERP", expanded=True):
+        if clientes_pendentes:
+            st.info(f"Existe(m) **{len(clientes_pendentes)}** cliente(s) novo(s) vindo(s) da API pendente(s) de abreviação.")
+            with st.form("form_novo_cliente_api"):
+                cli_sel = st.selectbox("Selecione o Cliente do ERP:", options=clientes_pendentes)
+                nome_abrev_input = st.text_input("Digite o Nome Abreviado para o PDF/Mapa:", value=cli_sel[:20])
+                
+                if st.form_submit_button("💾 Salvar Abreviação"):
+                    if cli_sel and nome_abrev_input:
+                        aba_cli.append_row([cli_sel, nome_abrev_input.strip()], value_input_option='USER_ENTERED')
+                        registrar_log(user['usuario'], "DE_PARA_CLIENTE", f"Cadastrado {cli_sel} -> {nome_abrev_input}")
+                        st.success(f"Cliente '{cli_sel}' abreviado como '{nome_abrev_input}' com sucesso!")
+                        st.rerun()
+                    else:
+                        st.warning("Preencha todos os campos.")
+        else:
+            st.success("🎉 Todos os clientes da aba Dados_api já estão cadastrados!")
+
+    with st.expander("📝 Cadastrar/Editar Abreviação Manualmente"):
+        with st.form("form_cliente_manual"):
+            nome_sis_man = st.text_input("Nome_Sistema (exatamente como vem no ERP)")
+            nome_abrev_man = st.text_input("Nome_Abreviado")
+            
+            if st.form_submit_button("Salvar Registro"):
+                if nome_sis_man and nome_abrev_man:
+                    # Verifica se já existe e atualiza ou insere
+                    if not df_cli.empty and nome_sis_man in df_cli['Nome_Sistema'].values:
+                        cel = aba_cli.find(nome_sis_man)
+                        if cel:
+                            aba_cli.update_cell(cel.row, 2, nome_abrev_man.strip())
+                            st.success("Abreviação atualizada!")
+                    else:
+                        aba_cli.append_row([nome_sis_man.strip(), nome_abrev_man.strip()], value_input_option='USER_ENTERED')
+                        st.success("Cliente cadastrado!")
+                    registrar_log(user['usuario'], "CLIENTE_MANUAL", f"Salvo {nome_sis_man} -> {nome_abrev_man}")
+                    st.rerun()
+
+    st.subheader("📋 Clientes Cadastrados (De-Para)")
+    if not df_cli.empty:
+        st.dataframe(df_cli, use_container_width=True)
+    else:
+        st.info("Nenhum cliente cadastrado ainda.")
+
+def tela_usuarios(user):
+    st.header("👥 Gestão de Usuários e Permissões")
+    gc = get_gc()
+    if not gc:
+        st.error("Erro ao conectar ao serviço do Google Sheets.")
+        return
+    sh = gc.open(PLANILHA_NOME)
+    aba_user = sh.worksheet("usuarios")
+    
+    with st.expander("➕ Cadastrar / Editar Usuário"):
+        with st.form("form_usuario"):
+            novo_u = st.text_input("Usuário (Login)")
+            nova_s = st.text_input("Senha", type="password")
+            nivel = st.selectbox("Nível (Total libera botões de ação)", ["total", "visualizacao"])
+            m1 = st.checkbox("Cadastro", True)
+            m2 = st.checkbox("Produtos", True)
+            m3 = st.checkbox("Clientes", True)
+            m4 = st.checkbox("Pedidos", True)
+            m5 = st.checkbox("Gestão de Rotas", True)
+            m6 = st.checkbox("Gestão de Usuários", False)
+            m7 = st.checkbox("Logs", True)
+            m8 = st.checkbox("Relatórios", True)
+            
+            if st.form_submit_button("Salvar"):
+                mods = [m for m, val in zip(["Cadastro", "Produtos", "Clientes", "Pedidos", "Gestão de Rotas", "Gestão de Usuários", "Logs", "Relatórios"], [m1, m2, m3, m4, m5, m6, m7, m8]) if val]
+                df_u = pd.DataFrame(aba_user.get_all_records())
+                if not df_u.empty and novo_u in df_u['usuario'].values:
+                    idx = df_u[df_u['usuario'] == novo_u].index[0] + 2
+                    aba_user.delete_rows(int(idx))
+                aba_user.append_row([novo_u, nova_s, nivel, ",".join(mods)])
+                registrar_log(user['usuario'], "USUÁRIO", f"Salvo/Atualizado usuário {novo_u}")
+                st.success("Usuário salvo com sucesso!")
+                st.rerun()
+                
+    st.dataframe(pd.DataFrame(aba_user.get_all_records()), use_container_width=True)
 
 def tela_produtos(user):
     st.header("📦 Cadastro de Produtos e De-Para ERP")
@@ -368,7 +460,7 @@ def tela_cadastro(user):
     try:
         aba_dados_api = sh.worksheet("Dados_api")
     except Exception:
-        st.error("Aba 'Dados_api' não encontrada no Google Sheets! Verifique o nome exatamente como criado.")
+        st.error("Aba 'Dados_api' não encontrada no Google Sheets!")
         return
 
     st.subheader("🔄 Importar Pedidos do ERP para 'Dados_api'")
@@ -635,12 +727,19 @@ if st.session_state.usuario_logado is None:
 else:
     user = st.session_state.usuario_logado
     st.sidebar.title(f"👤 {user['usuario']}")
-    op_full = ["Cadastro", "Produtos", "Pedidos", "Gestão de Rotas", "Relatórios", "Gestão de Usuários", "Logs"]
+    op_full = ["Cadastro", "Produtos", "Clientes", "Pedidos", "Gestão de Rotas", "Relatórios", "Gestão de Usuários", "Logs"]
     opcoes = op_full if user.get('modulos') == 'todos' else user.get('modulos', '').split(',')
+    
+    # Valida módulos
+    opcoes = [o.strip() for o in opcoes if o.strip() in op_full]
+    if not opcoes:
+        opcoes = op_full
+
     menu = st.sidebar.radio("Menu:", opcoes)
     
     if menu == "Cadastro": tela_cadastro(user)
     elif menu == "Produtos": tela_produtos(user)
+    elif menu == "Clientes": tela_clientes(user)
     elif menu == "Pedidos": tela_pedidos(user)
     elif menu == "Gestão de Rotas": tela_gestao_rotas(user)
     elif menu == "Relatórios":
