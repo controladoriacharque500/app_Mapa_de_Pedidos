@@ -111,40 +111,37 @@ def gerar_pdf_rota(df_matriz):
         pdf.ln()
     return bytes(pdf.output())
 
-# --- FUNÇÃO DE PROCESSAMENTO DE PEDIDOS COM DE-PARA DE CLIENTE E PRODUTO ---
+# --- FUNÇÃO DE PROCESSAMENTO COM TRAVA DE SEGURANÇA PARA CLIENTES ---
 
 def processar_dados_api_para_pedidos(user):
-    """Lê Dados_api, aplica De-Para de Produtos e Clientes e salva em pedidos."""
+    """
+    Lê Dados_api, verifica se TODOS os clientes possuem abreviação cadastrada na aba 'cliente'.
+    Se houver cliente sem abreviação, BLOQUEIA o processamento e NÃO apaga a Dados_api.
+    """
     gc = get_gc()
     if not gc:
-        return 0, "Erro na conexão com o Google Sheets."
+        return 0, "Erro na conexão com o Google Sheets.", False
 
     sh = gc.open(PLANILHA_NOME)
     aba_api = sh.worksheet("Dados_api")
     aba_prod = sh.worksheet("produtos")
     aba_pedidos = sh.worksheet("pedidos")
     
-    # Leitura da aba cliente para De-Para de Nomes
+    # 1. Leitura do De-Para de Clientes
     try:
         aba_cli = sh.worksheet("cliente")
         df_cli = pd.DataFrame(aba_cli.get_all_records()).fillna("")
     except Exception:
         df_cli = pd.DataFrame()
 
-    try:
-        aba_hist = sh.worksheet("historico")
-        df_hist = pd.DataFrame(aba_hist.get_all_records()).fillna("")
-    except Exception:
-        df_hist = pd.DataFrame()
-
     df_api = pd.DataFrame(aba_api.get_all_records()).fillna("")
     df_prod = pd.DataFrame(aba_prod.get_all_records()).fillna("")
     df_ped = pd.DataFrame(aba_pedidos.get_all_records()).fillna("")
 
     if df_api.empty:
-        return 0, "Aba Dados_api está vazia."
+        return 0, "Aba Dados_api está vazia.", True
 
-    # Map de Clientes (Nome_Sistema -> Nome_Abreviado)
+    # Monta mapa de clientes
     de_para_cli = {}
     if not df_cli.empty and 'Nome_Sistema' in df_cli.columns and 'Nome_Abreviado' in df_cli.columns:
         for _, r in df_cli.iterrows():
@@ -152,6 +149,26 @@ def processar_dados_api_para_pedidos(user):
             nome_abrev = str(r.get('Nome_Abreviado', '')).strip()
             if nome_sis and nome_abrev:
                 de_para_cli[nome_sis] = nome_abrev
+
+    # --- TRAVA DE SEGURANÇA: VERIFICAÇÃO DE CLIENTES NÃO ABREVIADOS ---
+    clientes_na_api = set(df_api['NOME_CLIENTE'].astype(str).str.strip().unique()) if 'NOME_CLIENTE' in df_api.columns else set()
+    clientes_na_api.discard("") # Remove vazios se houver
+
+    clientes_sem_abreviacao = [cli for cli in clientes_na_api if cli not in de_para_cli]
+
+    if clientes_sem_abreviacao:
+        msg_erro = f"🛑 **BLOQUEIO DE SEGURANÇA:** Existem {len(clientes_sem_abreviacao)} cliente(s) pendentes de abreviação na aba 'Clientes':\n\n"
+        for cli in clientes_sem_abreviacao:
+            msg_erro += f"• **{cli}**\n"
+        msg_erro += "\nPor favor, acesse o menu **Clientes**, faça a abreviação e tente novamente."
+        return 0, msg_erro, False
+
+    # 2. Leitura do Histórico de Pedidos para evitar duplicidade
+    try:
+        aba_hist = sh.worksheet("historico")
+        df_hist = pd.DataFrame(aba_hist.get_all_records()).fillna("")
+    except Exception:
+        df_hist = pd.DataFrame()
 
     # Map de Produtos
     de_para_map = {}
@@ -221,10 +238,9 @@ def processar_dados_api_para_pedidos(user):
                     qtde_peso = round(qtde_num, 3)
                 caixas = 1 if (0 < qtde_peso <= peso_unit_seguro) else int(round(qtde_peso / peso_unit_seguro))
 
-            # --- DE-PARA DE CLIENTE ---
+            # Nome abreviado do cliente garantido pela trava acima
             nome_cli_erp = str(row.get('NOME_CLIENTE', '')).strip()
-            # Usa a versão abreviada se cadastrada na aba 'cliente', senão usa o nome do ERP
-            nome_cli_final = de_para_cli.get(nome_cli_erp, nome_cli_erp)
+            nome_cli_final = de_para_cli[nome_cli_erp]
 
             obs_raw = row.get('OBSERVACAO', row.get('OBS', ''))
             obs_cli = str(obs_raw).strip() if pd.notna(obs_raw) and str(obs_raw).upper() != "NONE" else ""
@@ -244,6 +260,7 @@ def processar_dados_api_para_pedidos(user):
 
     registros_processados = len(novas_linhas_pedidos)
 
+    # Limpa Dados_api somente SE passou na trava e processou os itens
     valores_existentes = aba_api.get_all_values()
     if len(valores_existentes) > 1:
         aba_api.delete_rows(2, len(valores_existentes))
@@ -254,11 +271,11 @@ def processar_dados_api_para_pedidos(user):
     if registros_processados > 0:
         aba_pedidos.append_rows(novas_linhas_pedidos, value_input_option='USER_ENTERED')
         registrar_log(user['usuario'], "IMPORTACAO_PEDIDOS", f"{registros_processados} pedidos transferidos de Dados_api para pedidos")
-        return registros_processados, f"✅ {registros_processados} item(ns) transferido(s) com sucesso!"
+        return registros_processados, f"✅ {registros_processados} item(ns) transferido(s) com sucesso!", True
 
-    return 0, "Nenhum pedido pendente para processamento."
+    return 0, "Nenhum pedido pendente para processamento.", True
 
-# --- NOVAS TELAS E MÓDULOS ---
+# --- TELAS DO SISTEMA ---
 
 def tela_clientes(user):
     st.header("👤 Cadastro e Abreviação de Clientes (De-Para)")
@@ -288,14 +305,13 @@ def tela_clientes(user):
     if 'Nome_Abreviado' not in df_cli.columns:
         df_cli['Nome_Abreviado'] = ""
 
-    # Identifica clientes da Dados_api que ainda não estão abreviados
     clientes_api = [str(c).strip() for c in df_api['NOME_CLIENTE'].dropna().unique() if str(c).strip() != ""] if not df_api.empty and 'NOME_CLIENTE' in df_api.columns else []
     clientes_cadastrados = [str(c).strip() for c in df_cli['Nome_Sistema'].dropna().unique() if str(c).strip() != ""]
     clientes_pendentes = [c for c in clientes_api if c not in clientes_cadastrados]
 
     with st.expander("➕ Abreviar Novo Cliente vindo da API / ERP", expanded=True):
         if clientes_pendentes:
-            st.info(f"Existe(m) **{len(clientes_pendentes)}** cliente(s) novo(s) vindo(s) da API pendente(s) de abreviação.")
+            st.warning(f"⚠️ Existe(m) **{len(clientes_pendentes)}** cliente(s) novo(s) na aba Dados_api que precisam ser abreviados antes de transferir os pedidos!")
             with st.form("form_novo_cliente_api"):
                 cli_sel = st.selectbox("Selecione o Cliente do ERP:", options=clientes_pendentes)
                 nome_abrev_input = st.text_input("Digite o Nome Abreviado para o PDF/Mapa:", value=cli_sel[:20])
@@ -309,7 +325,7 @@ def tela_clientes(user):
                     else:
                         st.warning("Preencha todos os campos.")
         else:
-            st.success("🎉 Todos os clientes da aba Dados_api já estão cadastrados!")
+            st.success("🎉 Todos os clientes da aba Dados_api já possuem abreviação cadastrada!")
 
     with st.expander("📝 Cadastrar/Editar Abreviação Manualmente"):
         with st.form("form_cliente_manual"):
@@ -318,7 +334,6 @@ def tela_clientes(user):
             
             if st.form_submit_button("Salvar Registro"):
                 if nome_sis_man and nome_abrev_man:
-                    # Verifica se já existe e atualiza ou insere
                     if not df_cli.empty and nome_sis_man in df_cli['Nome_Sistema'].values:
                         cel = aba_cli.find(nome_sis_man)
                         if cel:
@@ -410,9 +425,12 @@ def tela_produtos(user):
                 if not prods_pendentes:
                     st.success("🎉 Todos os produtos da aba Dados_api já possuem vínculo cadastrado!")
                     if st.button("🚀 Processar Pedidos Pendentes Agora", type="primary", use_container_width=True):
-                        qtd, msg = processar_dados_api_para_pedidos(user)
-                        st.info(msg)
-                        st.rerun()
+                        qtd, msg, ok = processar_dados_api_para_pedidos(user)
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
                 else:
                     st.info(f"Existem **{len(prods_pendentes)}** produtos da API sem vínculo com o cadastro local.")
                     
@@ -428,9 +446,12 @@ def tela_produtos(user):
                                     aba_prod.update_cell(celula.row, 4, prod_erp_sel)
                                     registrar_log(user['usuario'], "DE_PARA", f"Vinculado '{prod_erp_sel}' -> '{prod_local_sel}'")
                                     
-                                    qtd_proc, msg_proc = processar_dados_api_para_pedidos(user)
-                                    st.success(f"✅ Vínculo salvo! {msg_proc}")
-                                    st.rerun()
+                                    qtd_proc, msg_proc, ok_proc = processar_dados_api_para_pedidos(user)
+                                    if ok_proc:
+                                        st.success(f"✅ Vínculo salvo! {msg_proc}")
+                                        st.rerun()
+                                    else:
+                                        st.error(msg_proc)
                                 else:
                                     st.error("Produto local não encontrado na planilha.")
                             else:
@@ -730,7 +751,6 @@ else:
     op_full = ["Cadastro", "Produtos", "Clientes", "Pedidos", "Gestão de Rotas", "Relatórios", "Gestão de Usuários", "Logs"]
     opcoes = op_full if user.get('modulos') == 'todos' else user.get('modulos', '').split(',')
     
-    # Valida módulos
     opcoes = [o.strip() for o in opcoes if o.strip() in op_full]
     if not opcoes:
         opcoes = op_full
